@@ -1,4 +1,5 @@
 use byteorder::{BigEndian, ReadBytesExt};
+use std::io::{Error, ErrorKind};
 use std::io::Cursor;
 use std::io::Read;
 use std::io::Seek;
@@ -12,190 +13,234 @@ struct BitCursor {
     cur: usize,
 }
 
+
 impl BitCursor {
-    fn new<T>(c: &mut std::io::Cursor<T>) -> BitCursor where T: AsRef<[u8]> {
-	let mut value = [0; 1];
-	c.read_exact(&mut value).expect("oops");
-	println!("Flags: {:#04x}", value[0]);
-	return BitCursor{
-	    value: value[0],
-	    cur: 8,
-	};
+    fn new<T>(c: &mut std::io::Cursor<T>) -> Result<BitCursor, std::io::Error> where T: AsRef<[u8]> {
+		let mut value = [0; 1];
+		c.read_exact(&mut value)?;
+		return Ok(BitCursor{
+			value: value[0],
+			cur: 8,
+		});
     }
 
-    fn read(&mut self, bits: usize) -> u8 {
-	if bits > self.cur {
-	    panic!("oops {}, {}", self.cur, bits);
-	}
-	let mask = (0x1 << bits) - 1;
-	let result = (self.value >> (self.cur - bits)) & mask;
-	self.cur -= bits;
-	return result;
+    fn read(&mut self, bits: usize) -> Result<u8, std::io::Error> {
+		if bits > self.cur {
+			return Err(Error::new(ErrorKind::Other, "BitCursor overflow"));
+		}
+		let mask = (0x1 << bits) - 1;
+		let result = (self.value >> (self.cur - bits)) & mask;
+		self.cur -= bits;
+		return Ok(result);
     }
 }
 
-fn read_name<T>(c: &mut std::io::Cursor<T>) where T: AsRef<[u8]> {
-    loop {
-	print!("<{}>", c.position());
-	let mut len = [0; 1];
-	c.read_exact(&mut len).expect("oops");
-	if len[0] & 0xc0 != 0 {
-	    let mut len2 = [0; 1];
-	    c.read_exact(&mut len2).expect("oops");
-	    let mut len = len[0] as u64;
-	    len &= 0x3f;
-	    len <<= 8;
-	    len += len2[0] as u64;
-	    println!("Pointer to {}", len);
-	    let pos = c.position();
-	    c.seek(SeekFrom::Start(len)).expect("oops");
-	    read_name(c);
-	    c.seek(SeekFrom::Start(pos)).expect("oops");
-	    break;
-	}
-	let len = len[0] as u64;
-	if len == 0 {
-	    break;
-	}
-	//println!("Length: {}\n", len);
-	let mut name = Vec::<u8>::new();
-	c.take(len).read_to_end(&mut name).expect("oops");
-	let name = String::from_utf8_lossy(&name);
-	print!("{}.", name);
-    }
-    println!();
+#[derive(Debug)]
+struct Question {
+	name: String,
+	typ: u32,
+	class: u32, 
 }
 
-fn read_rdata<T>(c: &mut std::io::Cursor<T>) -> Vec::<u8> where T: AsRef<[u8]> {
-    let rdlength = c.read_u16::<BigEndian>().expect("oops") as u64;
-    println!("RDLENGTH: {}", rdlength);
-    let mut rdata = Vec::<u8>::new();
-    c.take(rdlength).read_to_end(&mut rdata).expect("oops");
-    return rdata;
+#[derive(Debug)]
+struct SoaData {
+	mname: String,
+	rname: String,
+	serial: u32,
+	refresh: u32,
+	retry: u32,
+    expire: u32,
+	minimum: u32,
+}
+
+#[derive(Debug)]
+enum ResourceData {
+	IPv4(Ipv4Addr),
+	IPv6(Ipv6Addr),
+	CName(String),
+	Soa(SoaData),
+	Other(u32),
+}
+
+#[derive(Debug)]
+struct ResourceRecord {
+	name: String,
+	typ: u32,
+	class: u32,
+	ttl: u32,
+	data: ResourceData,
+}
+
+#[derive(Debug)]
+struct Header {
+	id: u32,
+	qr: bool,
+	opcode: u32,
+	aa: bool,
+	tc: bool,
+	rd: bool,
+	ra: bool,
+	ad: bool,
+    cd: bool,
+    rcode: u32,
+	questions: Vec<Question>,
+    answers: Vec<ResourceRecord>,
+    nameservers: Vec<ResourceRecord>,
+	additional: Vec<ResourceRecord>,
+}
+
+impl Header {
+	fn parse_name<T>(c: &mut std::io::Cursor<T>) -> Result<String, std::io::Error> where T: AsRef<[u8]> {
+		let mut name: String = String::new();
+		loop {
+			let mut len = [0; 1];
+			c.read_exact(&mut len)?;
+			// check if it's a pointer
+			println!("hmm {}", len[0]);
+			if len[0] & 0xc0 != 0 { 
+				let mut off = [0; 1];
+				c.read_exact(&mut off)?;
+				let off = (((len[0] & 0x3f) as u64) << 8) + (off[0] as u64);
+				let cur = c.position();
+				c.seek(SeekFrom::Start(off))?;
+				name.push_str(&Self::parse_name(c)?);
+				c.seek(SeekFrom::Start(cur))?;
+				return Ok(name);
+			}
+			let len = len[0] as u64;
+			if len == 0 {
+				return Ok(name);
+			}
+			let mut data = Vec::<u8>::new();
+			c.take(len).read_to_end(&mut data)?;
+			name.push_str(&String::from_utf8_lossy(&data));
+			name.push_str(".");
+		}
+	}
+
+	fn parse_question<T>(c: &mut std::io::Cursor<T>) -> Result<Question, std::io::Error> where T: AsRef<[u8]> {
+		let name = Self::parse_name(c)?;
+		let typ = c.read_u16::<BigEndian>()? as u32;
+		let class = c.read_u16::<BigEndian>()? as u32;
+		return Ok(Question{
+			name: name,
+			typ: typ,
+			class: class,
+		});
+	}
+	fn parse_questions<T>(c: &mut std::io::Cursor<T>, count: u32) -> Result<Vec<Question>, std::io::Error> where T: AsRef<[u8]> {
+		let mut qs = Vec::<Question>::new();
+		for _ in 0..count {
+			qs.push(Self::parse_question(c)?);
+		}
+		return Ok(qs);
+	}
+
+	fn parse_ipv4<T>(c: &mut std::io::Cursor<T>) -> Result<Ipv4Addr, std::io::Error> where T: AsRef<[u8]> {
+		let mut data: [u8; 4] = [0; 4];
+		c.read_exact(&mut data)?;
+		return Ok(Ipv4Addr::new(data[0], data[1], data[2], data[3]));
+	}
+
+	fn parse_cname<T>(c: &mut std::io::Cursor<T>) -> Result<String, std::io::Error> where T: AsRef<[u8]> {
+		return Ok(Self::parse_name(c)?);
+	}
+
+	fn parse_ipv6<T>(c: &mut std::io::Cursor<T>) -> Result<Ipv6Addr, std::io::Error> where T: AsRef<[u8]> {
+		let mut data: [u8; 16] = [0; 16];
+		c.read_exact(&mut data)?;
+		return Ok(Ipv6Addr::from(data));
+	}
+
+	fn parse_unknown<T>(c: &mut std::io::Cursor<T>, typ: u32, len: u64) -> Result<u32, std::io::Error> where T: AsRef<[u8]> {
+		let mut data = Vec::<u8>::new();
+		c.take(len).read_to_end(&mut data)?;
+		return Ok(typ);
+	}
+
+	fn parse_rdata<T>(c: &mut std::io::Cursor<T>, typ: u32, len: u64) -> Result<ResourceData, std::io::Error> where T: AsRef<[u8]> {
+		return match typ {
+			1 => Ok(ResourceData::IPv4(Self::parse_ipv4(c)?)),
+			5 => Ok(ResourceData::CName(Self::parse_cname(c)?)),
+			28 => Ok(ResourceData::IPv6(Self::parse_ipv6(c)?)),
+			_ => Ok(ResourceData::Other(Self::parse_unknown(c, typ, len)?)),
+		};
+	}
+
+	fn parse_resource<T>(c: &mut std::io::Cursor<T>) -> Result<ResourceRecord, std::io::Error> where T: AsRef<[u8]> {
+		let name = Self::parse_name(c)?;
+		let typ = c.read_u16::<BigEndian>()? as u32;
+		let class = c.read_u16::<BigEndian>()? as u32;
+		let ttl = c.read_u32::<BigEndian>()? as u32;
+		let rdlen = c.read_u16::<BigEndian>()? as u64;
+		return Ok(ResourceRecord{
+			name: name,
+			typ: typ,
+			class: class,
+			ttl: ttl,
+			data: Self::parse_rdata(c, typ, rdlen)?,
+		});
+	}
+
+	fn parse_resources<T>(c: &mut std::io::Cursor<T>, count: u32) -> Result<Vec<ResourceRecord>, std::io::Error> where T: AsRef<[u8]> {
+		let mut rs = Vec::<ResourceRecord>::new();
+		for _ in 0..count {
+			rs.push(Self::parse_resource(c)?);
+		}
+		return Ok(rs);
+	}
+
+	pub fn from(data: &mut [u8]) -> Result<Header, std::io::Error> {
+		let mut c = Cursor::new(data);
+		let id = c.read_u16::<BigEndian>()? as u32;
+		let mut flags = BitCursor::new(&mut c)?;
+		let qr = flags.read(1)? != 0;
+		let opcode = flags.read(4)? as u32;
+		let aa = flags.read(1)? != 0;
+		let tc = flags.read(1)? != 0;
+		let rd = flags.read(1)? != 0;
+		let mut flags = BitCursor::new(&mut c)?;
+		let ra = flags.read(1)? != 0;
+		let _z = flags.read(1)?;
+		let ad = flags.read(1)? != 0;
+		let cd = flags.read(1)? != 0;
+		let rcode = flags.read(4)? as u32;
+		let qcount = c.read_u16::<BigEndian>()? as u32;
+		let ancount = c.read_u16::<BigEndian>()? as u32;
+		let nscount = c.read_u16::<BigEndian>()? as u32;
+		let arcount = c.read_u16::<BigEndian>()? as u32;
+		println!("QCount: {}", qcount);
+		let questions = Self::parse_questions(&mut c, qcount)?;
+		let answers = Self::parse_resources(&mut c, ancount)?;
+		let nameservers = Self::parse_resources(&mut c, nscount)?;
+		let additional = Self::parse_resources(&mut c, arcount)?;
+		return Ok(Header{
+			id: id,
+			qr: qr,
+			opcode: opcode,
+			aa: aa,
+			tc: tc,
+			rd: rd,
+			ra: ra,
+			ad: ad,
+			cd: cd,
+			rcode: rcode,
+			questions: questions,
+			answers: answers,
+			nameservers: nameservers,
+			additional: additional,
+		});
+	}
 }
 
 fn main() {
-    let socket = UdpSocket::bind("127.0.0.1:3553").expect("ooops");
+    let socket = UdpSocket::bind("127.0.0.1:3553").expect("oops");
 
     loop {
         let mut buf = [0; 512];
-        let (amt, _src) = socket.recv_from(&mut buf).expect("ooops");
-	println!("+++++++++++++++++++");
-	println!("+++++++++++++++++++");
-	for i in 0..amt {
-	    if i % 8 == 0 && i != 0 {
-		println!();
-	    }
-	    print!("{:02x} ", buf[i]);
-	}
-	println!();
+        let (_amt, _src) = socket.recv_from(&mut buf).expect("oops");
 
-	let mut rdr = Cursor::new(buf);
-	let id = rdr.read_u16::<BigEndian>().expect("oops");
-	print!("ID: {}, ", id);
-	let mut flags = BitCursor::new(&mut rdr);
-	print!("QR: {}, ", flags.read(1));
-	print!("OPCODE: {}, ", flags.read(4));
-	print!("AA: {}, ", flags.read(1));
-	print!("TC: {}, ", flags.read(1));
-	print!("RD: {}, ", flags.read(1));
-	let mut flags = BitCursor::new(&mut rdr);
-	print!("RA: {}, ", flags.read(1));
-	print!("Z: {}, ", flags.read(1));
-	print!("AD: {}, ", flags.read(1));
-	print!("CD: {}, ", flags.read(1));
-	print!("RCODE: {}, ", flags.read(4));
-	let qdcount = rdr.read_u16::<BigEndian>().expect("oops");
-	print!("QDCOUNT: {}, ", qdcount);
-	let ancount = rdr.read_u16::<BigEndian>().expect("oops");
-	print!("ANCOUNT: {}, ", ancount);
-	let nscount = rdr.read_u16::<BigEndian>().expect("oops");
-	print!("NSCOUNT: {}, ", nscount);
-	let arcount = rdr.read_u16::<BigEndian>().expect("oops");
-	println!("ARCOUNT: {}, ", arcount);
-	println!("-- Questions --");
-	for _ in 0..qdcount {
-	    read_name(&mut rdr);
-	    let qtype = rdr.read_u16::<BigEndian>().expect("oops");
-	    println!("QTYPE: {}", qtype);
-	    let qclass = rdr.read_u16::<BigEndian>().expect("oops");
-	    println!("QCLASS: {}", qclass);
-	}
-	println!("-- Responses --");
-	for _ in 0..ancount{
-	    read_name(&mut rdr);
-	    let type_ = rdr.read_u16::<BigEndian>().expect("oops");
-	    println!("TYPE: {}", type_);
-	    let class = rdr.read_u16::<BigEndian>().expect("oops");
-	    println!("CLASS: {}", class);
-	    let ttl = rdr.read_u32::<BigEndian>().expect("oops");
-	    println!("TTL: {}", ttl);
-	    let rdlength = rdr.read_u16::<BigEndian>().expect("oops") as u64;
-	    if type_ == 1 {
-		let mut data: [u8; 4] = [0; 4];
-		rdr.read_exact(&mut data).expect("oops");
-		let addr = Ipv4Addr::new(data[0], data[1], data[2], data[3]);
-		println!("IP: {}", addr);
-	    } else if type_ == 2 {
-		println!("NSDNAME");
-		read_name(&mut rdr);
-	    } else if type_ == 5 {
-		println!("CNAME");
-		read_name(&mut rdr);
-	    } else if type_ == 6 {
-		println!("SOA");
-		read_name(&mut rdr);
-		read_name(&mut rdr);
-		print!("Serial: {}, ", rdr.read_u32::<BigEndian>().expect("oops"));
-		print!("Refresh: {}, ", rdr.read_u32::<BigEndian>().expect("oops"));
-		print!("Retry: {}, ", rdr.read_u32::<BigEndian>().expect("oops"));
-		println!("Expire: {}", rdr.read_u32::<BigEndian>().expect("oops"));
-	    } else if type_ == 28 {
-		let mut data: [u8; 16] = [0; 16];
-		rdr.read_exact(&mut data).expect("oops");
-		let addr = Ipv6Addr::from(data);
-		println!("IPv6: {}", addr);
-	    } else if type_ == 65 {
-		// ignore
-	    } else {
-		panic!("Unknown type {}", type_);
-	    }
-	}
-	println!("-- Authority Records --");
-	for _ in 0..nscount {
-	    read_name(&mut rdr);
-	    let type_ = rdr.read_u16::<BigEndian>().expect("oops");
-	    println!("TYPE: {}", type_);
-	    let class = rdr.read_u16::<BigEndian>().expect("oops");
-	    println!("CLASS: {}", class);
-	    let ttl = rdr.read_u32::<BigEndian>().expect("oops");
-	    println!("TTL: {}", ttl);
-	    let data = read_rdata(&mut rdr);
-	    if type_ == 1 {
-		let data:[u8;4] = data.try_into().expect("oops");
-		let addr = Ipv4Addr::from(data);
-		println!("IP: {}", addr);
-	    } else if type_ == 5 {
-		let cname = String::from_utf8_lossy(&data);
-		println!("CNAME: {}", cname);
-	    } else if type_ == 6 {
-		let mut rdr = Cursor::new(data);
-		println!("SOA");
-		//read_name(&mut rdr);
-		//read_name(&mut rdr);
-		print!("Serial: {}, ", rdr.read_u32::<BigEndian>().expect("oops"));
-		print!("Refresh: {}, ", rdr.read_u32::<BigEndian>().expect("oops"));
-		print!("Retry: {}, ", rdr.read_u32::<BigEndian>().expect("oops"));
-		println!("Expire: {}", rdr.read_u32::<BigEndian>().expect("oops"));
-	    } else if type_ == 28 {
-		let data:[u8;16] = data.try_into().expect("oops");
-		let addr = Ipv6Addr::from(data);
-		println!("IPv6: {}", addr);
-	    } else if type_ == 65 {
-		// ignore
-	    } else {
-		panic!("Unknown type {}", type_);
-	    }
-	}
+		let hdr = Header::from(&mut buf).expect("oops");
+		println!("{:#?}", hdr);
     }
 }
