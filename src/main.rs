@@ -109,6 +109,7 @@ impl Header {
 			let len = c.read_u16::<BigEndian>().expect("OOOOOOOOOOO") as u64;
 			let data = Vec::<u8>::new();
 			println!("XXXXXXXXXOptCode: {}", code);
+			c.seek(SeekFrom::Current(len as i64))?;
 			println!("position {}/{}", c.position(), rdlen);
 			if c.position() == rdlen {
 				break;
