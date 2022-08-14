@@ -105,15 +105,15 @@ impl Header {
 		let mut c = Cursor::new(data);
 		println!("LEEEN: {}", rdlen);
 		loop {
+			if c.position() == rdlen {
+				break;
+			}
 			let code = c.read_u16::<BigEndian>().expect("OOOOPS") as u32;
 			let len = c.read_u16::<BigEndian>().expect("OOOOOOOOOOO") as u64;
 			let data = Vec::<u8>::new();
 			println!("XXXXXXXXXOptCode: {}", code);
 			c.seek(SeekFrom::Current(len as i64))?;
 			println!("position {}/{}", c.position(), rdlen);
-			if c.position() == rdlen {
-				break;
-			}
 		}
 		return Ok(())
 	}
@@ -262,7 +262,7 @@ impl Header {
 }
 
 fn main() {
-    let socket = UdpSocket::bind("127.0.0.1:3553").expect("oops");
+    let socket = UdpSocket::bind("0.0.0.0:3553").expect("oops");
 
     loop {
         let mut buf = [0; 512];
