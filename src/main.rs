@@ -99,19 +99,18 @@ struct Header {
 
 impl Header {
 
-	fn parse_opt<T>(c: &mut std::io::Cursor<T>, len: u64) -> Result<(), std::io::Error> where T: AsRef<[u8]> {
+	fn parse_opt<T>(c: &mut std::io::Cursor<T>, rdlen: u64) -> Result<(), std::io::Error> where T: AsRef<[u8]> {
 		let mut data = Vec::<u8>::new();
-		c.take(len).read_to_end(&mut data).expect("ooops");
+		c.take(rdlen).read_to_end(&mut data).expect("ooops");
 		let mut c = Cursor::new(data);
-		println!("LEEEN: {}", len);
+		println!("LEEEN: {}", rdlen);
 		loop {
 			let code = c.read_u16::<BigEndian>().expect("OOOOPS") as u32;
 			let len = c.read_u16::<BigEndian>().expect("OOOOOOOOOOO") as u64;
 			let data = Vec::<u8>::new();
 			println!("XXXXXXXXXOptCode: {}", code);
-			c.seek(SeekFrom::Current(len as i64))?;
-			println!("position {}/{}", c.position(), len);
-			if c.position() == len {
+			println!("position {}/{}", c.position(), rdlen);
+			if c.position() == rdlen {
 				break;
 			}
 		}
