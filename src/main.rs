@@ -100,22 +100,22 @@ struct Header {
 impl Header {
 
 	fn parse_opt<T>(c: &mut std::io::Cursor<T>, rdlen: u64) -> Result<(), std::io::Error> where T: AsRef<[u8]> {
+		if len == 0 {
+			return Ok(());
+		}
 		let mut data = Vec::<u8>::new();
-		c.take(rdlen).read_to_end(&mut data).expect("ooops");
+		c.take(rdlen).read_to_end(&mut data)?;
 		let mut c = Cursor::new(data);
-		println!("LEEEN: {}", rdlen);
 		loop {
 			if c.position() == rdlen {
 				break;
 			}
-			let code = c.read_u16::<BigEndian>().expect("OOOOPS") as u32;
-			let len = c.read_u16::<BigEndian>().expect("OOOOOOOOOOO") as u64;
+			let code = c.read_u16::<BigEndian>()? as u32;
+			let len = c.read_u16::<BigEndian>()? as u64;
 			let data = Vec::<u8>::new();
-			println!("XXXXXXXXXOptCode: {}", code);
 			c.seek(SeekFrom::Current(len as i64))?;
-			println!("position {}/{}", c.position(), rdlen);
 		}
-		return Ok(())
+		return Ok(());
 	}
 
 	fn parse_name<T>(c: &mut std::io::Cursor<T>) -> Result<String, std::io::Error> where T: AsRef<[u8]> {
@@ -201,7 +201,6 @@ impl Header {
 		let class = c.read_u16::<BigEndian>()? as u32;
 		let ttl = c.read_u32::<BigEndian>()? as u32;
 		let rdlen = c.read_u16::<BigEndian>()? as u64;
-		println!("Rdata length: {} for type {}", rdlen, typ);
 		return Ok(ResourceRecord{
 			name: name,
 			typ: typ,
