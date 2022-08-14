@@ -110,6 +110,7 @@ impl Header {
 			let data = Vec::<u8>::new();
 			println!("XXXXXXXXXOptCode: {}", code);
 			c.seek(SeekFrom::Current(len as i64))?;
+			println!("position {}/{}", c.position(), len);
 			if c.position() == len {
 				break;
 			}
