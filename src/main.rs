@@ -71,6 +71,14 @@ struct ResourceRecord {
 	data: ResourceData,
 }
 
+enum Opt {
+	Other(u32),
+}
+
+struct OptData {
+	opts: Vec<Opt>,
+}
+
 #[derive(Debug)]
 struct Header {
 	id: u32,
@@ -90,13 +98,31 @@ struct Header {
 }
 
 impl Header {
+
+	fn parse_opt<T>(c: &mut std::io::Cursor<T>, len: u64) -> Result<(), std::io::Error> where T: AsRef<[u8]> {
+		let mut data = Vec::<u8>::new();
+		c.take(len).read_to_end(&mut data).expect("ooops");
+		let mut c = Cursor::new(data);
+		println!("LEEEN: {}", len);
+		loop {
+			let code = c.read_u16::<BigEndian>().expect("OOOOPS") as u32;
+			let len = c.read_u16::<BigEndian>().expect("OOOOOOOOOOO") as u64;
+			let data = Vec::<u8>::new();
+			println!("XXXXXXXXXOptCode: {}", code);
+			c.seek(SeekFrom::Current(len as i64))?;
+			if c.position() == len {
+				break;
+			}
+		}
+		return Ok(())
+	}
+
 	fn parse_name<T>(c: &mut std::io::Cursor<T>) -> Result<String, std::io::Error> where T: AsRef<[u8]> {
 		let mut name: String = String::new();
 		loop {
 			let mut len = [0; 1];
 			c.read_exact(&mut len)?;
 			// check if it's a pointer
-			println!("hmm {}", len[0]);
 			if len[0] & 0xc0 != 0 { 
 				let mut off = [0; 1];
 				c.read_exact(&mut off)?;
@@ -163,6 +189,7 @@ impl Header {
 			1 => Ok(ResourceData::IPv4(Self::parse_ipv4(c)?)),
 			5 => Ok(ResourceData::CName(Self::parse_cname(c)?)),
 			28 => Ok(ResourceData::IPv6(Self::parse_ipv6(c)?)),
+			41 => {Self::parse_opt(c, len); Ok(ResourceData::Other(41))},
 			_ => Ok(ResourceData::Other(Self::parse_unknown(c, typ, len)?)),
 		};
 	}
@@ -173,6 +200,7 @@ impl Header {
 		let class = c.read_u16::<BigEndian>()? as u32;
 		let ttl = c.read_u32::<BigEndian>()? as u32;
 		let rdlen = c.read_u16::<BigEndian>()? as u64;
+		println!("Rdata length: {} for type {}", rdlen, typ);
 		return Ok(ResourceRecord{
 			name: name,
 			typ: typ,
@@ -209,7 +237,6 @@ impl Header {
 		let ancount = c.read_u16::<BigEndian>()? as u32;
 		let nscount = c.read_u16::<BigEndian>()? as u32;
 		let arcount = c.read_u16::<BigEndian>()? as u32;
-		println!("QCount: {}", qcount);
 		let questions = Self::parse_questions(&mut c, qcount)?;
 		let answers = Self::parse_resources(&mut c, ancount)?;
 		let nameservers = Self::parse_resources(&mut c, nscount)?;
@@ -238,9 +265,17 @@ fn main() {
 
     loop {
         let mut buf = [0; 512];
-        let (_amt, _src) = socket.recv_from(&mut buf).expect("oops");
+        let (amt, _src) = socket.recv_from(&mut buf).expect("oops");
 
-		let hdr = Header::from(&mut buf).expect("oops");
+		for i in 0..amt {
+			if i % 8 == 0 && i != 0 {
+				println!();
+			}
+			print!("{:02x} ", buf[i]);
+		}
+		println!();
+
+		let hdr = Header::from(&mut buf[..amt]).expect("oops");
 		println!("{:#?}", hdr);
     }
 }
