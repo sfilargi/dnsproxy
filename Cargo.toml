@@ -7,3 +7,5 @@ edition = "2021"
 
 [dependencies]
 byteorder = "*"
+log = "*"
+getrandom = "0.2"
