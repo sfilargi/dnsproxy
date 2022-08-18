@@ -40,14 +40,14 @@ impl BitCursor {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Question {
     name: String,
     typ: u32,
     class: u32, 
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SoaData {
     mname: String,
     rname: String,
@@ -58,7 +58,7 @@ struct SoaData {
     minimum: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum ResourceData {
     IPv4(Ipv4Addr),
     IPv6(Ipv6Addr),
@@ -67,7 +67,7 @@ enum ResourceData {
     Other(u32),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ResourceRecord {
     name: String,
     typ: u32,
@@ -76,17 +76,17 @@ struct ResourceRecord {
     data: ResourceData,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Opt {
     Other(u32),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct OptData {
     opts: Vec<Opt>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Message {
     id: u32,
     qr: u8,
@@ -295,7 +295,7 @@ impl Message {
             (self.rcode as u8 & 0b111) << 0;
         c.write_all(&flags).expect("oops");
         c.write_u16::<BigEndian>(self.questions.len() as u16);
-        c.write_u16::<BigEndian>(0u16); // an
+        c.write_u16::<BigEndian>(self.answers.len() as u16); // an
         c.write_u16::<BigEndian>(0u16); // ns
         c.write_u16::<BigEndian>(0u16); // ad
         //Self::write_query(&mut c, &self.questions);
@@ -306,6 +306,21 @@ impl Message {
             }
             c.write_u16::<BigEndian>(q.typ as u16).expect("oops");
             c.write_u16::<BigEndian>(q.class as u16).expect("oops");
+        }
+        for a in &self.answers {
+            for part in a.name.split(".") {
+                c.write_u8(part.len() as u8);
+                c.write_all(&part.as_bytes());
+            }
+            c.write_u16::<BigEndian>(a.typ as u16);
+            c.write_u16::<BigEndian>(a.class as u16);
+            c.write_u32::<BigEndian>(a.ttl);
+            if let ResourceData::IPv4(addr) = a.data {
+                c.write_u16::<BigEndian>(4 as u16);
+                c.write_all(&addr.octets());
+            } else {
+                panic!("oops");
+            }
         }
         return Ok(data);
     }
@@ -336,7 +351,7 @@ fn genid() -> u16 {
     return ((buf[0] as u16) << 8) | (buf[1] as u16);
 }
 
-fn send_query(name: &str) {
+fn send_query(name: &str) -> Result<Message, std::io::Error> {
     let socket = UdpSocket::bind("0.0.0.0:0").expect("oops");
     socket.connect((Ipv4Addr::new(9, 9, 9, 9), 53)).expect("oops");
     let mut msg = Message::new();
@@ -366,6 +381,27 @@ fn send_query(name: &str) {
 
     let msg = Message::from(&mut buf[..amt]).expect("oops");
     println!("{:#?}", msg);
+    return Ok(msg);
+}
+
+fn encode_reply(q: &Message, r: &Message) -> Result<Vec<u8>, std::io::Error> {
+    let mut reply = Message::new();
+    reply.id = q.id;
+    reply.qr = 1; // reply
+    reply.opcode = q.opcode;
+    reply.aa = r.aa;
+    reply.tc = r.tc;
+    reply.rd = r.rd;
+    reply.ad = r.ad;
+    reply.cd = r.cd;
+    reply.rcode = r.rcode;
+    for qs in &q.questions {
+        reply.questions.push(qs.clone());
+    }
+    for ans in &r.answers {
+        reply.answers.push(ans.clone());
+    }
+    return Ok(reply.into_bytes().expect("oops"));
 }
 
 fn main() {
@@ -373,7 +409,7 @@ fn main() {
     
     loop {
         let mut buf = [0; 512];
-        let (amt, _src) = socket.recv_from(&mut buf).expect("oops");
+        let (amt, src) = socket.recv_from(&mut buf).expect("oops");
         
         for i in 0..amt {
             print!("{:02x} ", buf[i]);
@@ -391,6 +427,8 @@ fn main() {
         }
         println!("Quering for {}", msg.questions[0].name);
         println!("ID: {}", genid());
-        send_query(&msg.questions[0].name);
+        let resp = send_query(&msg.questions[0].name).expect("oops");
+        let data = encode_reply(&msg, &resp).expect("oops");
+        socket.send_to(&data, src);
     }
 }
