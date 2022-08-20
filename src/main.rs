@@ -9,7 +9,9 @@ use std::io::Write;
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 use std::net::UdpSocket;
-
+use std::rc::Rc;
+use std::cell::RefCell;
+use std::cell::Cell;
 
 //type PacketWriter<T> where std::io::Cursor<T>: std::io::Write = std::io::Cursor<T>;
 //type ByteCursor<'a> = std::io::Cursor<&'a mtudyn AsRef<[u8]>>;
@@ -392,6 +394,7 @@ fn encode_reply(q: &Message, r: &Message) -> Result<Vec<u8>, std::io::Error> {
     reply.aa = r.aa;
     reply.tc = r.tc;
     reply.rd = r.rd;
+    reply.ra = r.ra;
     reply.ad = r.ad;
     reply.cd = r.cd;
     reply.rcode = r.rcode;
@@ -404,7 +407,77 @@ fn encode_reply(q: &Message, r: &Message) -> Result<Vec<u8>, std::io::Error> {
     return Ok(reply.into_bytes().expect("oops"));
 }
 
+
+struct NameNode {
+    part: String,
+    index: u64,
+    children: Vec<Box<NameNode>>,
+}
+
+fn find_child<'a>(parent: &'a mut Box<NameNode>, part: &str) -> Option<&'a mut Box<NameNode>> {
+    for c in parent.children.iter_mut() {
+        if c.part == part {
+            return Some(c);
+        }
+    }
+    return None;
+}
+
+fn add_recursive(parent: &mut Box<NameNode>, parts: &[String]) {
+    if parts.len() == 0 {
+        return;
+    }
+    let c = match find_child(parent, &parts[0]) {
+        None => {
+            let c = Box::new(NameNode{
+                part: parts[0].to_owned(),
+                index: 0,
+                children: Vec::new(),
+            });
+            parent.children.push(c);
+            parent.children.last_mut().expect("oops")
+        },
+        Some(c) => c,
+    };
+    add_recursive(c, &parts[1..]);
+}
+
+fn print_recursive(node: &Box<NameNode>, level: u32) {
+    println!("Level -> {}, Node -> {}, Children -> {}", 
+        level, node.part, node.children.len());
+    for c in &node.children {
+        print!("{}", c.part);
+    }
+    println!();
+    for c in &node.children {
+        print_recursive(c, level + 1);
+    }
+}
+
+fn add_name(name: &str, index: u64) {
+    let mut parts = Vec::<String>::new();
+    for p in name.trim_end_matches(".").split(".") {
+        parts.push(p.to_owned());
+    }
+    parts.reverse();
+    for p in &parts {
+        println!("{}", p);
+    }
+    let mut root = Box::new(NameNode{
+        part: "".to_owned(),
+        index: 0,
+        children: Vec::new(),
+    });
+
+    add_recursive(&mut root, &parts);
+    print_recursive(&root, 0);
+}
+
 fn main() {
+
+    add_name(&"www.example.com.", 0);
+    return;
+
     let socket = UdpSocket::bind("0.0.0.0:3553").expect("oops");
     
     loop {
