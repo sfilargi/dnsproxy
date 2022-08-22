@@ -75,30 +75,11 @@
             None
         }
 
-        fn search_recursive<'a>(node: &PartNode, parts: &'a[&str]) -> Option<(&'a[&'a str], u64)> {
-            if parts.len() == 0 {
-                return Some((&[], node.index))
-            }
-            match Self::find_child(node, parts[parts.len() - 1]) {
-                Some(node) => Self::search_recursive(node, &parts[..parts.len() - 1]),
-                None => Some((&parts[..parts.len()], node.index)),
-            }
-        }
-
-        // Returns the Leftovers + Pos of the found parts
-        pub fn search<'a>(&self, parts: &'a [&'a str]) -> Option<(&'a [&'a str], u64)> {
-            assert!(parts.len() != 0);
-            if let None = Self::find_child(&self.root, parts[parts.len() -1]) {
-                return None;
-            }
-            Self::search_recursive(&self.root, parts)
-        }
-
-        fn search_recursive_<'a>(node: &PartNode, parts: &'a[&str], mut cur: usize) -> Option<(&'a [&'a str], &'a [&'a str], u64)> {
+        fn search_recursive<'a>(node: &PartNode, parts: &'a[&str], mut cur: usize) -> Option<(&'a [&'a str], &'a [&'a str], u64)> {
             match Self::find_child(node, parts[cur]) {
                 Some(node) =>
                     if cur > 0 {
-                        Self::search_recursive_(node, parts, cur - 1)
+                        Self::search_recursive(node, parts, cur - 1)
                     } else {
                         Some((&[], parts, node.index))
                     },
@@ -107,12 +88,12 @@
         }
 
         // Returns (leftover parts, found parts, index)
-        pub fn search_<'a>(&self, parts: &'a [&'a str]) -> Option<(&'a [&'a str], &'a [&'a str], u64)> {
+        pub fn search<'a>(&self, parts: &'a [&'a str]) -> Option<(&'a [&'a str], &'a [&'a str], u64)> {
             assert!(parts.len() != 0);
             if let None = Self::find_child(&self.root, parts[parts.len() -1]) {
                 return None;
             }
-            Self::search_recursive_(&self.root, parts, parts.len() - 1)
+            Self::search_recursive(&self.root, parts, parts.len() - 1)
         }
     }
 
@@ -130,14 +111,17 @@
         }
 
         pub fn write(&mut self, buf: &[u8], name: &str) -> Result<(), std::io::Error> {
-            self.tree.insert(&[PartPos::new("test", 10), PartPos::new("com", 10)]);
-            let mut parts: &[&str] = &name.split(".").filter(|p| *p != "").collect::<Vec<&str>>();
+            self.tree.insert(&[PartPos::new("test", 10), PartPos::new("com", 15)]);
+            let parts: &[&str] = &name.split(".").filter(|p| *p != "").collect::<Vec<&str>>();
+            let mut leftover: &[&str] = &[];
+            let mut found: &[&str] = parts;
             let mut pointer: Option<u64> = None;
-            if let Some((leftover, index)) = self.tree.search(&parts) {
-                parts = leftover;
-                pointer = Some(index);
+            if let Some((l, f, i)) = self.tree.search(&parts) {
+                leftover = l;
+                found = f;
+                pointer = Some(i);
             }
-            println!("{:?}, {:?}", parts, pointer);
+            println!("Stavros - {:?}, {:?}, {:?}", leftover, found, pointer);
             Ok(())
         }
     }
@@ -165,9 +149,9 @@
             nt.insert(&vec![PartPos::new("test", 10), PartPos::new("com", 15)]);
             nt.insert(&vec![PartPos::new("example", 1), PartPos::new("test", 9), 
                 PartPos::new("com", 11)]);
-            assert!(nt.search_(&["ok", "test", "com"]) == Some((&["ok"], &["test", "com"], 10)));
-            assert!(nt.search_(&["test", "com"]) == Some((&[], &["test", "com"], 10)));
-            assert!(nt.search_(&["com"]) == Some((&[], &["com"], 15)));
+            assert!(nt.search(&["ok", "test", "com"]) == Some((&["ok"], &["test", "com"], 10)));
+            assert!(nt.search(&["test", "com"]) == Some((&[], &["test", "com"], 10)));
+            assert!(nt.search(&["com"]) == Some((&[], &["com"], 15)));
         }
 
         #[test]
