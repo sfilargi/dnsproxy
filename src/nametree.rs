@@ -209,14 +209,12 @@ mod tests {
         nw.write(&mut c, "simple.test.com.");
         nw.write(&mut c, "example.com.");
         nw.write(&mut c, "extra.test.com.");
-        print_recursive(&nw.tree.root, 0);
-        for x in buf {
-            if x >= 32 && x <= 126 {
-                print!("{} ", x as char);
-            } else {
-                print!("{:02x} ", x);
-            }
-        }
-        println!();
+        let expected = vec![
+            6, 's' as u8, 'i' as u8, 'm' as u8, 'p' as u8, 'l' as u8, 'e' as u8, 
+            4, 't' as u8, 'e' as u8, 's' as u8, 't' as u8,
+            3, 'c' as u8, 'o' as u8, 'm' as u8, 0, 
+            7, 'e' as u8, 'x' as u8, 'a' as u8, 'm' as u8, 'p' as u8, 'l' as u8, 'e' as u8, 0xc0, 12, 
+            5, 'e' as u8, 'x' as u8, 't' as u8, 'r' as u8, 'a' as u8, 0xc0, 7];
+        assert!(expected == buf);
     }
 }
