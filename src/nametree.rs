@@ -190,7 +190,7 @@ mod tests {
     }
     
     #[test]
-    fn test_basic() {
+    fn test_tree() {
         let mut nt = NameTree::new();
         nt.insert(&vec![PartPos::new("test", 9), PartPos::new("net", 14)]);
         nt.insert(&vec![PartPos::new("test", 10), PartPos::new("com", 15)]);
