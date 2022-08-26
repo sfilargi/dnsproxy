@@ -6,7 +6,7 @@ use std::io::Write;
 
 struct PartNode {
     part: String,
-    index: u64,
+    index: usize,
     children: Vec<PartNode>,
 }
 
@@ -16,11 +16,11 @@ pub struct NameTree {
 
 pub struct PartPos {
     part: String,
-    pos: u64,
+    pos: usize,
 }
 
 impl PartPos {
-    pub fn new(part: &str, pos: u64) -> PartPos {
+    pub fn new(part: &str, pos: usize) -> PartPos {
         PartPos {
             part: part.to_owned(),
             pos,
@@ -97,7 +97,7 @@ impl NameTree {
         None
     }
 
-    fn search_recursive<'a>(node: &PartNode, parts: &'a[&str], mut cur: usize) -> Option<(&'a [&'a str], &'a [&'a str], u64)> {
+    fn search_recursive<'a>(node: &PartNode, parts: &'a[&str], mut cur: usize) -> Option<(&'a [&'a str], &'a [&'a str], usize)> {
         match Self::find_child(node, parts[cur]) {
             Some(node) =>
                 if cur > 0 {
@@ -110,7 +110,7 @@ impl NameTree {
     }
 
     // Returns (leftover parts, found parts, index)
-    pub fn search<'a>(&self, parts: &'a [&'a str]) -> Option<(&'a [&'a str], &'a [&'a str], u64)> {
+    pub fn search<'a>(&self, parts: &'a [&'a str]) -> Option<(&'a [&'a str], &'a [&'a str], usize)> {
         assert!(parts.len() != 0);
         if let None = Self::find_child(&self.root, parts[parts.len() -1]) {
             return None;
@@ -130,10 +130,10 @@ impl NameWriter {
         }
     }
 
-    fn search<'a>(&self, parts: &'a[&'a str]) -> (&'a [&'a str], &'a [&'a str], Option<u64>) {
+    fn search<'a>(&self, parts: &'a[&'a str]) -> (&'a [&'a str], &'a [&'a str], Option<usize>) {
         let mut leftover: &[&str];
         let mut found: &[&str];
-        let mut pointer: Option<u64>;
+        let mut pointer: Option<usize>;
         if let Some((l, f, i)) = self.tree.search(&parts) {
             leftover = l;
             found = f;
@@ -156,7 +156,7 @@ impl NameWriter {
         let mut additions: Vec<PartPos> = Vec::new();     
         for l in leftover {
             let length: u8 = l.len().try_into().expect("ooops");
-            let pos = c.position();
+            let pos = c.position() as usize;
             c.write_u8(length).expect("ooops");
             c.write_all(&l.as_bytes()).expect("ooops");
             additions.push(PartPos::new(l, pos));
@@ -170,6 +170,102 @@ impl NameWriter {
             self.tree.insert_at(&additions, found);
         }
         Ok(())
+    }
+}
+
+#[derive(Debug,Clone)]
+struct ReadNode {
+    part: String,
+    next: Option<usize>,
+}
+
+struct ReadTree {
+    parts: Vec<Option<ReadNode>>,
+}
+
+impl ReadTree {
+    pub fn new() -> ReadTree {
+        ReadTree{
+            parts: Vec::new(),
+        }
+    }
+    pub fn save(&mut self, parts: &[PartPos], next: Option<usize>) {
+        for i in 0..parts.len() {
+            let p = &parts[i];
+            if p.pos >= self.parts.len() {
+                self.parts.resize(p.pos + 1, None);
+            }
+            let np = if i + 1 < parts.len() {
+                Some(parts[i + 1].pos)
+            } else {
+                next
+            };
+            self.parts[p.pos] = Some(ReadNode{
+                part: p.part.to_owned(),
+                next: np,
+            });
+        }
+    }
+    pub fn load(&self, pos: usize) -> String {
+        let mut parts = Vec::<&str>::new();
+        let mut p = pos;
+        loop {
+            if let Some(n) = &self.parts[p] {
+                parts.push(&n.part);
+                if let Some(np) = n.next {
+                    p = np;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        return parts.join(".") + ".";
+    }
+}
+
+pub struct NameReader {
+    tree: ReadTree
+}
+
+enum PartOrPointer {
+    Part(String),
+    Pointer(usize),
+    End,
+}
+
+impl NameReader {
+    pub fn new() -> NameReader {
+        NameReader{
+            tree: ReadTree::new(),
+        }
+    }
+
+    fn read_part<T>(c: &mut Cursor<T>) -> Result<PartOrPointer, std::io::Error>
+    where std::io::Cursor<T>: std::io::Read {
+        return Ok(PartOrPointer::End);
+    }
+
+    pub fn read<T>(&mut self, c: &mut Cursor<T>) -> Result<String, std::io::Error>
+    where std::io::Cursor<T>: std::io::Read {
+        let mut parts = Vec::<String>::new();
+        let mut next: Option<usize> = None;
+        loop {
+            match Self::read_part(c)? {
+                PartOrPointer::Part(part) => {
+                    parts.push(part);
+                },
+                PartOrPointer::Pointer(pos) => {
+                    next = Some(pos);
+                    break;
+                },
+                PartOrPointer::End => {
+                    break;
+                },
+            }
+        }
+        Ok("".to_owned())
     }
 }
 
@@ -188,7 +284,28 @@ mod tests {
             print_recursive(c, level + 1);
         }
     }
-    
+
+    #[test]
+    fn test_reader() {
+        let mut rt = ReadTree{
+            parts: Vec::new(),
+        };
+        rt.parts.push(Some(ReadNode{part: "test".to_owned(), next: None}));
+        let x = 10;
+        if x >= rt.parts.len() {
+            rt.parts.resize(x + 1, None);
+        }
+        rt.parts[10] = None;
+        println!("{:?}", rt.parts)
+    }
+
+    #[test]
+    fn test_reader2() {
+        let mut rt = ReadTree::new();
+        rt.save(&[PartPos::new("a", 0), PartPos::new("b", 2)], None);
+        println!("{:?}", rt.load(0));
+    }
+
     #[test]
     fn test_tree() {
         let mut nt = NameTree::new();
