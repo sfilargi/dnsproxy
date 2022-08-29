@@ -193,7 +193,7 @@ impl ReadTree {
             parts: Vec::new(),
         }
     }
-    pub fn save(&mut self, parts: &[PartPos], next: Option<usize>) {
+    pub fn insert(&mut self, parts: &[PartPos], next: Option<usize>) {
         for i in 0..parts.len() {
             let p = &parts[i];
             if p.pos >= self.parts.len() {
@@ -234,7 +234,7 @@ pub struct NameReader {
 }
 
 enum PartOrPointer {
-    Part(String),
+    Part(usize, String),
     Pointer(usize),
     End,
 }
@@ -248,26 +248,30 @@ impl NameReader {
 
     fn read_part<T>(c: &mut Cursor<T>) -> Result<PartOrPointer, std::io::Error>
     where std::io::Cursor<T>: std::io::BufRead {
+        let pos = c.position() as usize;
         let len = c.read_u8()?;
-        if len & 0xc0 == 0xc0 {
-            // it's poitnter
+        if len == 0x0 {
+            return Ok(PartOrPointer::End);
+        } else if len & 0xc0 == 0xc0 {
+            // it's pointer
             let len2 = c.read_u8()?;
             return Ok(PartOrPointer::Pointer((len as usize & !0xc0) << 8 | len2 as usize));
         } else {
             let mut data = Vec::<u8>::new();
             c.take(len as u64).read_to_end(&mut data)?;
-            return Ok(PartOrPointer::Part(String::from_utf8_lossy(&data).to_string()));
+            return Ok(PartOrPointer::Part(pos, String::from_utf8_lossy(&data).to_string()));
         }
     }
 
     pub fn read<T>(&mut self, c: &mut Cursor<T>) -> Result<String, std::io::Error>
     where std::io::Cursor<T>: std::io::BufRead {
-        let mut parts = Vec::<String>::new();
+        let mut parts = Vec::<PartPos>::new();
         let mut next: Option<usize> = None;
+        let start = c.position() as usize;
         loop {
             match Self::read_part(c)? {
-                PartOrPointer::Part(part) => {
-                    parts.push(part);
+                PartOrPointer::Part(pos, part) => {
+                    parts.push(PartPos::new(&part, pos));
                 },
                 PartOrPointer::Pointer(pos) => {
                     next = Some(pos);
@@ -278,7 +282,8 @@ impl NameReader {
                 },
             }
         }
-        Ok("".to_owned())
+        self.tree.insert(&parts, next);
+        return Ok(self.tree.load(start));
     }
 }
 
@@ -315,8 +320,23 @@ mod tests {
     #[test]
     fn test_reader2() {
         let mut rt = ReadTree::new();
-        rt.save(&[PartPos::new("a", 0), PartPos::new("b", 2)], None);
+        rt.insert(&[PartPos::new("a", 0), PartPos::new("b", 2)], None);
         println!("{:?}", rt.load(0));
+    }
+
+    #[test]
+    fn test_writer3() {
+        let mut buf = vec![
+            0x6, 's' as u8, 'i' as u8, 'm' as u8, 'p' as u8, 'l' as u8, 'e' as u8, 
+            0x4, 't' as u8, 'e' as u8, 's' as u8, 't' as u8,
+            0x3, 'c' as u8, 'o' as u8, 'm' as u8, 0x0, 
+            0x7, 'e' as u8, 'x' as u8, 'a' as u8, 'm' as u8, 'p' as u8, 'l' as u8, 'e' as u8, 0xc0, 0xc, 
+            0x5, 'e' as u8, 'x' as u8, 't' as u8, 'r' as u8, 'a' as u8, 0xc0, 0x7];
+        let mut c = Cursor::new(&mut buf);
+        let mut nr = NameReader::new();
+        assert!(matches!(nr.read(&mut c), Ok(x) if x == "simple.test.com."));
+        assert!(matches!(nr.read(&mut c), Ok(x) if x == "example.com."));
+        assert!(matches!(nr.read(&mut c), Ok(x) if x == "extra.test.com."));
     }
 
     #[test]
