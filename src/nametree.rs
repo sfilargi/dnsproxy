@@ -3,6 +3,10 @@ use log::{info, warn, error};
 use std::io::{Error, ErrorKind};
 use std::io::Cursor;
 use std::io::Write;
+use std::io::Read;
+use std::io::BufRead;
+
+
 
 struct PartNode {
     part: String,
@@ -243,12 +247,21 @@ impl NameReader {
     }
 
     fn read_part<T>(c: &mut Cursor<T>) -> Result<PartOrPointer, std::io::Error>
-    where std::io::Cursor<T>: std::io::Read {
-        return Ok(PartOrPointer::End);
+    where std::io::Cursor<T>: std::io::BufRead {
+        let len = c.read_u8()?;
+        if len & 0xc0 == 0xc0 {
+            // it's poitnter
+            let len2 = c.read_u8()?;
+            return Ok(PartOrPointer::Pointer((len as usize & !0xc0) << 8 | len2 as usize));
+        } else {
+            let mut data = Vec::<u8>::new();
+            c.take(len as u64).read_to_end(&mut data)?;
+            return Ok(PartOrPointer::Part(String::from_utf8_lossy(&data).to_string()));
+        }
     }
 
     pub fn read<T>(&mut self, c: &mut Cursor<T>) -> Result<String, std::io::Error>
-    where std::io::Cursor<T>: std::io::Read {
+    where std::io::Cursor<T>: std::io::BufRead {
         let mut parts = Vec::<String>::new();
         let mut next: Option<usize> = None;
         loop {
