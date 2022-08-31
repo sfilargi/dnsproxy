@@ -337,6 +337,7 @@ mod tests {
         assert!(matches!(nr.read(&mut c), Ok(x) if x == "simple.test.com."));
         assert!(matches!(nr.read(&mut c), Ok(x) if x == "example.com."));
         assert!(matches!(nr.read(&mut c), Ok(x) if x == "extra.test.com."));
+        println!("{:?}", nr.tree.parts);
     }
 
     #[test]
