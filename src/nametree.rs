@@ -123,7 +123,7 @@ impl NameTree {
     }
 }
 
-struct NameWriter {
+pub struct NameWriter {
     tree: NameTree,
 }
 
@@ -282,8 +282,15 @@ impl NameReader {
                 },
             }
         }
-        self.tree.insert(&parts, next);
-        return Ok(self.tree.load(start));
+        
+        if parts.len() != 0 {
+            self.tree.insert(&parts, next);
+            return Ok(self.tree.load(start));
+        } else if let Some(p) = next {
+            return Ok(self.tree.load(p));
+        } else {
+            return Ok(".".to_owned());
+        }
     }
 }
 

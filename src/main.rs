@@ -90,6 +90,236 @@ struct OptData {
     opts: Vec<Opt>,
 }
 
+struct MessageParser<'a> {
+    c: Cursor<&'a mut [u8]>,
+    nr: nametree::NameReader,
+}
+
+impl MessageParser<'_> {
+    fn new<'a>(data: &'a mut [u8]) -> MessageParser<'a> {
+        MessageParser{
+            c: Cursor::new(data),
+            nr: nametree::NameReader::new(),
+        }
+    }
+
+    fn parse_opt(&mut self, rdlen: u64) -> Result<(), std::io::Error> {
+        if rdlen == 0 {
+            return Ok(());
+        }
+        let mut data = Vec::<u8>::new();
+        self.c.get_ref().take(rdlen).read_to_end(&mut data)?;
+        let mut c = Cursor::new(data);
+        loop {
+            if c.position() == rdlen {
+                break;
+            }
+            let code = c.read_u16::<BigEndian>()? as u32;
+            let len = c.read_u16::<BigEndian>()? as u64;
+            let data = Vec::<u8>::new();
+            c.seek(SeekFrom::Current(len as i64))?;
+        }
+        return Ok(());
+    }
+    
+    fn parse_name(&mut self) -> Result<String, std::io::Error> {
+        let mut name: String = String::new();
+        loop {
+            let mut len = [0; 1];
+            self.c.read_exact(&mut len)?;
+            // check if it's a pointer
+            if len[0] & 0xc0 != 0 { 
+                let mut off = [0; 1];
+                self.c.read_exact(&mut off)?;
+                let off = (((len[0] & 0x3f) as u64) << 8) + (off[0] as u64);
+                let cur = self.c.position();
+                self.c.seek(SeekFrom::Start(off))?;
+                name.push_str(&self.parse_name()?);
+                self.c.seek(SeekFrom::Start(cur))?;
+                return Ok(name);
+            }
+            let len = len[0] as u64;
+            if len == 0 {
+                return Ok(name);
+            }
+            let mut data = Vec::<u8>::new();
+            self.c.get_ref().take(len).read_to_end(&mut data)?;
+            name.push_str(&String::from_utf8_lossy(&data));
+            name.push_str(".");
+        }
+    }
+    
+    fn parse_question(&mut self) -> Result<Question, std::io::Error> {
+        println!("Reading question!");
+        let name = self.nr.read(&mut self.c)?;
+        let typ = self.c.read_u16::<BigEndian>()? as u32;
+        let class = self.c.read_u16::<BigEndian>()? as u32;
+        return Ok(Question{
+            name: name,
+            typ: typ,
+            class: class,
+        });
+    }
+    fn parse_questions(&mut self, count: u32) -> Result<Vec<Question>, std::io::Error> {
+        let mut qs = Vec::<Question>::new();
+        for _ in 0..count {
+            qs.push(self.parse_question()?);
+        }
+        return Ok(qs);
+    }
+    
+    fn parse_ipv4(&mut self) -> Result<Ipv4Addr, std::io::Error> {
+        let mut data: [u8; 4] = [0; 4];
+        self.c.read_exact(&mut data)?;
+        return Ok(Ipv4Addr::new(data[0], data[1], data[2], data[3]));
+    }
+    
+    fn parse_cname(&mut self) -> Result<String, std::io::Error> {
+        return Ok(self.nr.read(&mut self.c)?);
+    }
+    
+    fn parse_ipv6(&mut self) -> Result<Ipv6Addr, std::io::Error> {
+        let mut data: [u8; 16] = [0; 16];
+        self.c.read_exact(&mut data)?;
+        return Ok(Ipv6Addr::from(data));
+    }
+    
+    fn parse_unknown(&mut self, typ: u32, len: u64) -> Result<u32, std::io::Error> {
+        let mut data = Vec::<u8>::new();
+        self.c.get_ref().take(len).read_to_end(&mut data)?;
+        return Ok(typ);
+    }
+    
+    fn parse_rdata(&mut self, typ: u32, len: u64) -> Result<ResourceData, std::io::Error> {
+        return match typ {
+            1 => Ok(ResourceData::IPv4(self.parse_ipv4()?)),
+            5 => Ok(ResourceData::CName(self.parse_cname()?)),
+            28 => Ok(ResourceData::IPv6(self.parse_ipv6()?)),
+            41 => {self.parse_opt(len); Ok(ResourceData::Other(41))},
+            _ => Ok(ResourceData::Other(self.parse_unknown(typ, len)?)),
+        };
+    }
+    
+    fn parse_resource(&mut self) -> Result<ResourceRecord, std::io::Error> {
+        let name = self.nr.read(&mut self.c)?;
+        let typ = self.c.read_u16::<BigEndian>()? as u32;
+        let class = self.c.read_u16::<BigEndian>()? as u32;
+        let ttl = self.c.read_u32::<BigEndian>()? as u32;
+        let rdlen = self.c.read_u16::<BigEndian>()? as u64;
+        return Ok(ResourceRecord{
+            name: name,
+            typ: typ,
+            class: class,
+            ttl: ttl,
+            data: self.parse_rdata(typ, rdlen)?,
+        });
+    }
+    
+    fn parse_resources(&mut self, count: u32) -> Result<Vec<ResourceRecord>, std::io::Error> {
+        let mut rs = Vec::<ResourceRecord>::new();
+        for _ in 0..count {
+            rs.push(self.parse_resource()?);
+        }
+        return Ok(rs);
+    }
+    
+    fn parse(&mut self) -> Result<Message, std::io::Error> {
+        let id = self.c.read_u16::<BigEndian>()? as u32;
+        let mut flags = BitCursor::new(&mut self.c)?;
+        let qr = flags.read(1)?;
+        let opcode = flags.read(4)? as u32;
+        let aa = flags.read(1)?;
+        let tc = flags.read(1)?;
+        let rd = flags.read(1)?;
+        let mut flags = BitCursor::new(&mut self.c)?;
+        let ra = flags.read(1)?;
+        let _z = flags.read(1)?;
+        let ad = flags.read(1)?;
+        let cd = flags.read(1)?;
+        let rcode = flags.read(4)? as u32;
+        let qcount = self.c.read_u16::<BigEndian>()? as u32;
+        let ancount = self.c.read_u16::<BigEndian>()? as u32;
+        let nscount = self.c.read_u16::<BigEndian>()? as u32;
+        let arcount = self.c.read_u16::<BigEndian>()? as u32;
+        let questions = self.parse_questions(qcount)?;
+        let answers = self.parse_resources(ancount)?;
+        let nameservers = self.parse_resources(nscount)?;
+        let additional = self.parse_resources(arcount)?;
+        return Ok(Message{
+            id: id,
+            qr: qr,
+            opcode: opcode,
+            aa: aa,
+            tc: tc,
+            rd: rd,
+            ra: ra,
+            ad: ad,
+            cd: cd,
+            rcode: rcode,
+            questions: questions,
+            answers: answers,
+            nameservers: nameservers,
+            additional: additional,
+        });
+    }
+}
+
+struct MessageWriter<'a> {
+    m: &'a Message,
+    c: Cursor<&'a mut Vec<u8>>,
+    nw: nametree::NameWriter,
+}
+
+impl<'a> MessageWriter<'_> {
+    pub fn new(msg: &'a Message, data: &'a mut Vec<u8>) -> MessageWriter<'a> {
+        MessageWriter {
+            m: msg,
+            c: Cursor::new(data),
+            nw: nametree::NameWriter::new(),
+        }
+    }
+    pub fn into_bytes(&mut self) -> Result<(), std::io::Error> {
+        self.c.write_u16::<BigEndian>(self.m.id as u16);
+        let mut flags = [0u8; 2];
+        flags[0] = 
+            (self.m.qr & 0b1) << 7 |
+            (self.m.opcode as u8 & 0b1111) << 3 |
+            (self.m.aa & 0b1) << 2 |
+            (self.m.tc & 0b1) << 1 |
+            (self.m.rd & 0b1) << 0;
+        flags[1] = 
+            (self.m.ra & 0b1) << 7 |
+            (0 & 0b1) << 6 |
+            (self.m.ad & 0b1) << 5 |
+            (self.m.cd & 0b1) << 4 |
+            (self.m.rcode as u8 & 0b111) << 0;
+        self.c.write_all(&flags).expect("oops");
+        self.c.write_u16::<BigEndian>(self.m.questions.len() as u16);
+        self.c.write_u16::<BigEndian>(self.m.answers.len() as u16); // an
+        self.c.write_u16::<BigEndian>(0u16); // ns
+        self.c.write_u16::<BigEndian>(0u16); // ad
+        //Self::write_query(&mut c, &self.questions);
+        for q in &self.m.questions {
+            self.nw.write(&mut self.c, &q.name)?;
+            self.c.write_u16::<BigEndian>(q.typ as u16).expect("oops");
+            self.c.write_u16::<BigEndian>(q.class as u16).expect("oops");
+        }
+        for a in &self.m.answers {
+            self.nw.write(&mut self.c, &a.name)?;
+            self.c.write_u16::<BigEndian>(a.typ as u16);
+            self.c.write_u16::<BigEndian>(a.class as u16);
+            self.c.write_u32::<BigEndian>(a.ttl);
+            if let ResourceData::IPv4(addr) = a.data {
+                self.c.write_u16::<BigEndian>(4 as u16);
+                self.c.write_all(&addr.octets());
+            } else {
+                panic!("oops");
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Message {
     id: u32,
@@ -110,223 +340,21 @@ struct Message {
 
 impl Message {
     
-    fn parse_opt<T>(c: &mut std::io::Cursor<T>, rdlen: u64) -> Result<(), std::io::Error> where T: AsRef<[u8]> {
-        if rdlen == 0 {
-            return Ok(());
-        }
-        let mut data = Vec::<u8>::new();
-        c.take(rdlen).read_to_end(&mut data)?;
-        let mut c = Cursor::new(data);
-        loop {
-            if c.position() == rdlen {
-                break;
-            }
-            let code = c.read_u16::<BigEndian>()? as u32;
-            let len = c.read_u16::<BigEndian>()? as u64;
-            let data = Vec::<u8>::new();
-            c.seek(SeekFrom::Current(len as i64))?;
-        }
-        return Ok(());
-    }
-    
-    fn parse_name<T>(c: &mut std::io::Cursor<T>) -> Result<String, std::io::Error> where T: AsRef<[u8]> {
-        let mut name: String = String::new();
-        loop {
-            let mut len = [0; 1];
-            c.read_exact(&mut len)?;
-            // check if it's a pointer
-            if len[0] & 0xc0 != 0 { 
-                let mut off = [0; 1];
-                c.read_exact(&mut off)?;
-                let off = (((len[0] & 0x3f) as u64) << 8) + (off[0] as u64);
-                let cur = c.position();
-                c.seek(SeekFrom::Start(off))?;
-                name.push_str(&Self::parse_name(c)?);
-                c.seek(SeekFrom::Start(cur))?;
-                return Ok(name);
-            }
-            let len = len[0] as u64;
-            if len == 0 {
-                return Ok(name);
-            }
-            let mut data = Vec::<u8>::new();
-            c.take(len).read_to_end(&mut data)?;
-            name.push_str(&String::from_utf8_lossy(&data));
-            name.push_str(".");
-        }
-    }
-    
-    fn parse_question<T>(c: &mut std::io::Cursor<T>) -> Result<Question, std::io::Error> where T: AsRef<[u8]> {
-        let name = Self::parse_name(c)?;
-        let typ = c.read_u16::<BigEndian>()? as u32;
-        let class = c.read_u16::<BigEndian>()? as u32;
-        return Ok(Question{
-            name: name,
-            typ: typ,
-            class: class,
-        });
-    }
-    fn parse_questions<T>(c: &mut std::io::Cursor<T>, count: u32) -> Result<Vec<Question>, std::io::Error> where T: AsRef<[u8]> {
-        let mut qs = Vec::<Question>::new();
-        for _ in 0..count {
-            qs.push(Self::parse_question(c)?);
-        }
-        return Ok(qs);
-    }
-    
-    fn parse_ipv4<T>(c: &mut std::io::Cursor<T>) -> Result<Ipv4Addr, std::io::Error> where T: AsRef<[u8]> {
-        let mut data: [u8; 4] = [0; 4];
-        c.read_exact(&mut data)?;
-        return Ok(Ipv4Addr::new(data[0], data[1], data[2], data[3]));
-    }
-    
-    fn parse_cname<T>(c: &mut std::io::Cursor<T>) -> Result<String, std::io::Error> where T: AsRef<[u8]> {
-        return Ok(Self::parse_name(c)?);
-    }
-    
-    fn parse_ipv6<T>(c: &mut std::io::Cursor<T>) -> Result<Ipv6Addr, std::io::Error> where T: AsRef<[u8]> {
-        let mut data: [u8; 16] = [0; 16];
-        c.read_exact(&mut data)?;
-        return Ok(Ipv6Addr::from(data));
-    }
-    
-    fn parse_unknown<T>(c: &mut std::io::Cursor<T>, typ: u32, len: u64) -> Result<u32, std::io::Error> where T: AsRef<[u8]> {
-        let mut data = Vec::<u8>::new();
-        c.take(len).read_to_end(&mut data)?;
-        return Ok(typ);
-    }
-    
-    fn parse_rdata<T>(c: &mut std::io::Cursor<T>, typ: u32, len: u64) -> Result<ResourceData, std::io::Error> where T: AsRef<[u8]> {
-        return match typ {
-            1 => Ok(ResourceData::IPv4(Self::parse_ipv4(c)?)),
-            5 => Ok(ResourceData::CName(Self::parse_cname(c)?)),
-            28 => Ok(ResourceData::IPv6(Self::parse_ipv6(c)?)),
-            41 => {Self::parse_opt(c, len); Ok(ResourceData::Other(41))},
-            _ => Ok(ResourceData::Other(Self::parse_unknown(c, typ, len)?)),
-        };
-    }
-    
-    fn parse_resource<T>(c: &mut std::io::Cursor<T>) -> Result<ResourceRecord, std::io::Error> where T: AsRef<[u8]> {
-        let name = Self::parse_name(c)?;
-        let typ = c.read_u16::<BigEndian>()? as u32;
-        let class = c.read_u16::<BigEndian>()? as u32;
-        let ttl = c.read_u32::<BigEndian>()? as u32;
-        let rdlen = c.read_u16::<BigEndian>()? as u64;
-        return Ok(ResourceRecord{
-            name: name,
-            typ: typ,
-            class: class,
-            ttl: ttl,
-            data: Self::parse_rdata(c, typ, rdlen)?,
-        });
-    }
-    
-    fn parse_resources<T>(c: &mut std::io::Cursor<T>, count: u32) -> Result<Vec<ResourceRecord>, std::io::Error> where T: AsRef<[u8]> {
-        let mut rs = Vec::<ResourceRecord>::new();
-        for _ in 0..count {
-            rs.push(Self::parse_resource(c)?);
-        }
-        return Ok(rs);
-    }
-    
     pub fn from(data: &mut [u8]) -> Result<Message, std::io::Error> {
-        let mut c = Cursor::new(data);
-        let id = c.read_u16::<BigEndian>()? as u32;
-        let mut flags = BitCursor::new(&mut c)?;
-        let qr = flags.read(1)?;
-        let opcode = flags.read(4)? as u32;
-        let aa = flags.read(1)?;
-        let tc = flags.read(1)?;
-        let rd = flags.read(1)?;
-        let mut flags = BitCursor::new(&mut c)?;
-        let ra = flags.read(1)?;
-        let _z = flags.read(1)?;
-        let ad = flags.read(1)?;
-        let cd = flags.read(1)?;
-        let rcode = flags.read(4)? as u32;
-        let qcount = c.read_u16::<BigEndian>()? as u32;
-        let ancount = c.read_u16::<BigEndian>()? as u32;
-        let nscount = c.read_u16::<BigEndian>()? as u32;
-        let arcount = c.read_u16::<BigEndian>()? as u32;
-        let questions = Self::parse_questions(&mut c, qcount)?;
-        let answers = Self::parse_resources(&mut c, ancount)?;
-        let nameservers = Self::parse_resources(&mut c, nscount)?;
-        let additional = Self::parse_resources(&mut c, arcount)?;
-        return Ok(Message{
-            id: id,
-            qr: qr,
-            opcode: opcode,
-            aa: aa,
-            tc: tc,
-            rd: rd,
-            ra: ra,
-            ad: ad,
-            cd: cd,
-            rcode: rcode,
-            questions: questions,
-            answers: answers,
-            nameservers: nameservers,
-            additional: additional,
-        });
+        MessageParser::new(data).parse()
     }
-
 
     fn write_something<T>(c: &mut std::io::Cursor<T>) -> Result<(), std::io::Error> where std::io::Cursor<T>: std::io::Write {
         let mut buf = [0u8; 16];
         c.write_all(&buf).expect("test");
 
-        return Ok(());
+        Ok(())
     }
 
     pub fn into_bytes(&mut self) -> Result<Vec::<u8>, std::io::Error> {
-        let mut data = Vec::<u8>::new();
-
-        let mut c = Cursor::new(&mut data);
-
-        c.write_u16::<BigEndian>(self.id as u16);
-        let mut flags = [0u8; 2];
-        flags[0] = 
-            (self.qr & 0b1) << 7 |
-            (self.opcode as u8 & 0b1111) << 3 |
-            (self.aa & 0b1) << 2 |
-            (self.tc & 0b1) << 1 |
-            (self.rd & 0b1) << 0;
-        flags[1] = 
-            (self.ra & 0b1) << 7 |
-            (0 & 0b1) << 6 |
-            (self.ad & 0b1) << 5 |
-            (self.cd & 0b1) << 4 |
-            (self.rcode as u8 & 0b111) << 0;
-        c.write_all(&flags).expect("oops");
-        c.write_u16::<BigEndian>(self.questions.len() as u16);
-        c.write_u16::<BigEndian>(self.answers.len() as u16); // an
-        c.write_u16::<BigEndian>(0u16); // ns
-        c.write_u16::<BigEndian>(0u16); // ad
-        //Self::write_query(&mut c, &self.questions);
-        for q in &self.questions {
-            for part in q.name.split(".") {
-                c.write_u8(part.len() as u8);
-                c.write_all(&part.as_bytes());
-            }
-            c.write_u16::<BigEndian>(q.typ as u16).expect("oops");
-            c.write_u16::<BigEndian>(q.class as u16).expect("oops");
-        }
-        for a in &self.answers {
-            for part in a.name.split(".") {
-                c.write_u8(part.len() as u8);
-                c.write_all(&part.as_bytes());
-            }
-            c.write_u16::<BigEndian>(a.typ as u16);
-            c.write_u16::<BigEndian>(a.class as u16);
-            c.write_u32::<BigEndian>(a.ttl);
-            if let ResourceData::IPv4(addr) = a.data {
-                c.write_u16::<BigEndian>(4 as u16);
-                c.write_all(&addr.octets());
-            } else {
-                panic!("oops");
-            }
-        }
-        return Ok(data);
+        let mut buffer = Vec::<u8>::new();
+        MessageWriter::new(&self, &mut buffer).into_bytes()?;
+        Ok(buffer)
     }
 
     pub fn new() -> Message {
