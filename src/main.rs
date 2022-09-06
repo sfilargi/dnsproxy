@@ -14,27 +14,27 @@ use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 use std::net::UdpSocket;
 use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, Duration};
 
 mod nametree;
 
 struct CacheEntry {
     a: Ipv4Addr,
-    expiry: u64,
+    expiry: Instant,
 }
 
 impl CacheEntry {
     fn new(a: &Ipv4Addr, ttl: u64) -> CacheEntry {
 	CacheEntry{
 	    a: a.clone(),
-	    expiry: SystemTime::now().duration_since(UNIX_EPOCH).expect("oops").as_secs() + ttl,
+	    expiry: Instant::now() + Duration::from_secs(ttl),
 	}
     }
     fn get_ttl(&self) -> u64 {
-	return self.expiry - SystemTime::now().duration_since(UNIX_EPOCH).expect("oops").as_secs();
+	return (self.expiry - Instant::now()).as_secs();
     }
     fn is_valid(&self) -> bool {
-	return self.expiry > SystemTime::now().duration_since(UNIX_EPOCH).expect("oops").as_secs();
+	return self.expiry > Instant::now();
     }
 }
 
