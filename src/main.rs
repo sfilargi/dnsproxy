@@ -3,6 +3,7 @@ use log::{info, warn, error};
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::io::Cursor;
 use std::io::Read;
 use std::io::Seek;
@@ -30,7 +31,10 @@ impl CacheEntry {
 	}
     }
     fn get_ttl(&self) -> u64 {
-	return 0;
+	return self.expiry - SystemTime::now().duration_since(UNIX_EPOCH).expect("oops").as_secs();
+    }
+    fn is_valid(&self) -> bool {
+	return self.expiry > SystemTime::now().duration_since(UNIX_EPOCH).expect("oops").as_secs();
     }
 }
 
@@ -48,11 +52,22 @@ impl Cache {
 	self.table.insert(name.to_owned(), CacheEntry::new(a, ttl));
     }
 
-    fn get(&self, name: &str) -> Option<(&Ipv4Addr, u64)> {
+    fn get_(&mut self, name: &str) -> Option<&CacheEntry> {
 	match self.table.get(name) {
-	    Some(entry) => Some((&entry.a, entry.get_ttl())),
+	    Some(entry) => Some(entry),
 	    None => None,
 	}
+    }
+
+    fn get(&mut self, name: &str) -> Option<(Ipv4Addr, u64)> {
+	if let Entry::Occupied(e) = self.table.entry((&name).to_string()) {
+            if !e.get().is_valid() {
+		e.remove_entry();
+		return None;
+            }
+	    return Some((e.get().a.clone(), e.get().get_ttl()));
+	}
+	return None;
     }
 }
 
@@ -525,7 +540,7 @@ fn main() {
         println!("Quering for {}", msg.questions[0].name);
         println!("ID: {}", genid());
 	let resp = if let Some((a, ttl)) = cache.get(&msg.questions[0].name) {
-	    create_response(&msg, a, ttl)
+	    create_response(&msg, &a, ttl)
 	} else {
             let resp = send_query(&msg.questions[0].name).expect("oops");
 	    if let ResourceData::IPv4(a) = resp.answers[0].data {
