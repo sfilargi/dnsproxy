@@ -1,22 +1,60 @@
 use byteorder::*;
 use log::{info, warn, error};
-use std::io::{Error, ErrorKind};
+use std::cell::Cell;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::io::Write;
+use std::io::{Error, ErrorKind};
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 use std::net::UdpSocket;
 use std::rc::Rc;
-use std::cell::RefCell;
-use std::cell::Cell;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 mod nametree;
 
-//type PacketWriter<T> where std::io::Cursor<T>: std::io::Write = std::io::Cursor<T>;
-//type ByteCursor<'a> = std::io::Cursor<&'a mtudyn AsRef<[u8]>>;
+struct CacheEntry {
+    a: Ipv4Addr,
+    expiry: u64,
+}
+
+impl CacheEntry {
+    fn new(a: &Ipv4Addr, ttl: u64) -> CacheEntry {
+	CacheEntry{
+	    a: a.clone(),
+	    expiry: SystemTime::now().duration_since(UNIX_EPOCH).expect("oops").as_secs() + ttl,
+	}
+    }
+    fn get_ttl(&self) -> u64 {
+	return 0;
+    }
+}
+
+struct Cache {
+    table: HashMap<String, CacheEntry>,
+}
+
+impl Cache {
+    fn new() -> Cache {
+	Cache{table: HashMap::new()}
+    }
+
+    fn insert(&mut self, name: &str, a: &Ipv4Addr, ttl: u64) {
+	println!("Adding to cache: {:?}, {:?}, {:?}", name, a, ttl);
+	self.table.insert(name.to_owned(), CacheEntry::new(a, ttl));
+    }
+
+    fn get(&self, name: &str) -> Option<(&Ipv4Addr, u64)> {
+	match self.table.get(name) {
+	    Some(entry) => Some((&entry.a, entry.get_ttl())),
+	    None => None,
+	}
+    }
+}
 
 struct BitCursor {
     value: u8,
@@ -405,7 +443,6 @@ fn send_query(name: &str) -> Result<Message, std::io::Error> {
     socket.send(&data).expect("oops");
     let mut buf = [0; 512];
     let amt = socket.recv(&mut buf).expect("ooops");
-    println!("hmmmm");
     for i in 0..amt {
         print!("{:02x} ", buf[i]);
     }
@@ -437,7 +474,34 @@ fn encode_reply(q: &Message, r: &Message) -> Result<Vec<u8>, std::io::Error> {
     return Ok(reply.into_bytes().expect("oops"));
 }
 
+fn create_response(q: &Message, a: &Ipv4Addr, ttl: u64) -> Message {
+    let mut r = Message::new();
+    r.id = q.id;
+    r.qr = 1;
+    r.opcode = q.opcode;
+    r.aa = 1; // ?
+    r.tc = 0;
+    r.rd = q.rd;
+    r.ra = 1;
+    r.ad = 0;
+    r.cd = 0;
+    r.rcode = 0;
+    assert!(q.questions.len() == 1);
+    for qs in &q.questions {
+	r.questions.push(qs.clone());
+	r.answers.push(ResourceRecord{
+	    name: qs.name.clone(),
+	    typ: qs.typ,
+	    ttl: ttl as u32,
+	    class: qs.class,
+	    data: ResourceData::IPv4(a.clone()),
+	});
+    }
+    r
+}
+
 fn main() {
+    let mut cache = Cache::new();
     let socket = UdpSocket::bind("0.0.0.0:3553").expect("oops");
     
     loop {
@@ -451,17 +515,26 @@ fn main() {
 
         let msg = Message::from(&mut buf[..amt]).expect("oops");
         if msg.questions.len() != 1 {
-            error!("Only 1 query supported!");
+            panic!("Only 1 query supported!");
             continue;
         }
         if msg.questions[0].typ != 1 {
-            error!("Only type 1 questions supported!");
+            panic!("Only type 1 questions supported!");
             continue;
         }
         println!("Quering for {}", msg.questions[0].name);
         println!("ID: {}", genid());
-        let resp = send_query(&msg.questions[0].name).expect("oops");
-        let data = encode_reply(&msg, &resp).expect("oops");
+	let resp = if let Some((a, ttl)) = cache.get(&msg.questions[0].name) {
+	    create_response(&msg, a, ttl)
+	} else {
+            let resp = send_query(&msg.questions[0].name).expect("oops");
+	    if let ResourceData::IPv4(a) = resp.answers[0].data {
+		cache.insert(&resp.answers[0].name, &a, resp.answers[0].ttl as u64);
+	    }
+	    resp
+	};
+	let data = encode_reply(&msg, &resp).expect("oops");
         socket.send_to(&data, src);
+
     }
 }
