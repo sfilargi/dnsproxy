@@ -4,6 +4,7 @@ use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::fs::File;
 use std::io::Cursor;
 use std::io::Read;
 use std::io::Seek;
@@ -515,6 +516,11 @@ fn create_response(q: &Message, a: &Ipv4Addr, ttl: u64) -> Message {
     r
 }
 
+fn save_debug(packet: &[u8]) {
+    let mut f = File::create("packet.dat").expect("oops");
+    f.write_all(packet);
+}
+
 fn main() {
     let mut cache = Cache::new();
     let socket = UdpSocket::bind("0.0.0.0:3553").expect("oops");
@@ -534,6 +540,7 @@ fn main() {
             continue;
         }
         if msg.questions[0].typ != 1 {
+	    save_debug(&buf);
             panic!("Only type 1 questions supported!");
             continue;
         }
@@ -543,6 +550,9 @@ fn main() {
 	    create_response(&msg, &a, ttl)
 	} else {
             let resp = send_query(&msg.questions[0].name).expect("oops");
+	    if resp.rcode != 0 {
+		panic!("Oops, todo!");
+	    }
 	    if let ResourceData::IPv4(a) = resp.answers[0].data {
 		cache.insert(&resp.answers[0].name, &a, resp.answers[0].ttl as u64);
 	    }
@@ -550,6 +560,5 @@ fn main() {
 	};
 	let data = encode_reply(&msg, &resp).expect("oops");
         socket.send_to(&data, src);
-
     }
 }
