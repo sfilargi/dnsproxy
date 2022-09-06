@@ -6,8 +6,6 @@ use std::io::Write;
 use std::io::Read;
 use std::io::BufRead;
 
-
-
 struct PartNode {
     part: String,
     index: usize,

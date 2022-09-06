@@ -18,6 +18,7 @@ use std::rc::Rc;
 use std::time::{Instant, Duration};
 
 mod nametree;
+mod tokengen;
 
 struct CacheEntry {
     a: Ipv4Addr,
