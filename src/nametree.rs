@@ -296,18 +296,6 @@ impl NameReader {
 mod tests {
     use super::*;
     
-    fn print_recursive(node: &PartNode, level: u32) {
-        println!("Level -> {}, Node -> {}, {}, Children -> {}", 
-            level, node.part, node.index, node.children.len());
-        for c in &node.children {
-            print!("{} -> {}, ", c.part, c.index);
-        }
-        println!();
-        for c in &node.children {
-            print_recursive(c, level + 1);
-        }
-    }
-
     #[test]
     fn test_reader() {
         let mut rt = ReadTree{
@@ -319,14 +307,12 @@ mod tests {
             rt.parts.resize(x + 1, None);
         }
         rt.parts[10] = None;
-        println!("{:?}", rt.parts)
     }
 
     #[test]
     fn test_reader2() {
         let mut rt = ReadTree::new();
         rt.insert(&[PartPos::new("a", 0), PartPos::new("b", 2)], None);
-        println!("{:?}", rt.load(0));
     }
 
     #[test]
@@ -342,7 +328,6 @@ mod tests {
         assert!(matches!(nr.read(&mut c), Ok(x) if x == "simple.test.com."));
         assert!(matches!(nr.read(&mut c), Ok(x) if x == "example.com."));
         assert!(matches!(nr.read(&mut c), Ok(x) if x == "extra.test.com."));
-        println!("{:?}", nr.tree.parts);
     }
 
     #[test]
