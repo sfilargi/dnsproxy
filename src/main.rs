@@ -51,18 +51,19 @@ impl Cache {
 
     fn insert(&mut self, name: &str, a: &Ipv4Addr, ttl: u64) {
 	println!("Adding to cache: {:?}, {:?}, {:?}", name, a, ttl);
-	self.table.insert(name.to_owned(), CacheEntry::new(a, ttl));
+	self.table.insert(name.to_lowercase().to_owned(),
+			  CacheEntry::new(a, ttl));
     }
 
     fn get_(&mut self, name: &str) -> Option<&CacheEntry> {
-	match self.table.get(name) {
+	match self.table.get(&name.to_lowercase()) {
 	    Some(entry) => Some(entry),
 	    None => None,
 	}
     }
 
     fn get(&mut self, name: &str) -> Option<(Ipv4Addr, u64)> {
-	if let Entry::Occupied(e) = self.table.entry((&name).to_string()) {
+	if let Entry::Occupied(e) = self.table.entry(name.to_lowercase()) {
             if !e.get().is_valid() {
 		e.remove_entry();
 		return None;
