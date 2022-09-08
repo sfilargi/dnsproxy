@@ -50,7 +50,6 @@ impl Cache {
     }
 
     fn insert(&mut self, name: &str, a: &Ipv4Addr, ttl: u64) {
-	println!("Adding to cache: {:?}, {:?}, {:?}", name, a, ttl);
 	self.table.insert(name.to_lowercase().to_owned(),
 			  CacheEntry::new(a, ttl));
     }
@@ -206,7 +205,6 @@ impl MessageParser<'_> {
     }
     
     fn parse_question(&mut self) -> Result<Question, std::io::Error> {
-        println!("Reading question!");
         let name = self.nr.read(&mut self.c)?;
         let typ = self.c.read_u16::<BigEndian>()? as u32;
         let class = self.c.read_u16::<BigEndian>()? as u32;
@@ -453,21 +451,11 @@ fn send_query(name: &str) -> Result<Message, std::io::Error> {
         class: 1, // IN
     });
     let data = msg.into_bytes().expect("oops");
-    for i in 0..data.len() {
-        print!("{:02x} ", data[i]);
-    }
-    println!();
-    println!("Sending!");
     socket.send(&data).expect("oops");
     let mut buf = [0; 512];
     let amt = socket.recv(&mut buf).expect("ooops");
-    for i in 0..amt {
-        print!("{:02x} ", buf[i]);
-    }
-    println!();
 
     let msg = Message::from(&mut buf[..amt]).expect("oops");
-    println!("{:#?}", msg);
     return Ok(msg);
 }
 
@@ -531,11 +519,6 @@ fn main() {
         let mut buf = [0; 512];
         let (amt, src) = socket.recv_from(&mut buf).expect("oops");
         
-        for i in 0..amt {
-            print!("{:02x} ", buf[i]);
-        }
-        println!();
-
         let msg = Message::from(&mut buf[..amt]).expect("oops");
         if msg.questions.len() != 1 {
             panic!("Only 1 query supported!");
@@ -546,8 +529,6 @@ fn main() {
             panic!("Only type 1 questions supported!");
             continue;
         }
-        println!("Quering for {}", msg.questions[0].name);
-        println!("ID: {}", genid());
 	let resp = if let Some((a, ttl)) = cache.get(&msg.questions[0].name) {
 	    create_response(&msg, &a, ttl)
 	} else {
