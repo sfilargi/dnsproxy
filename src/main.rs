@@ -511,37 +511,57 @@ fn save_debug(packet: &[u8]) {
     f.write_all(packet);
 }
 
+fn handle_conn(cache: &mut Cache, socket: &mut mio::net::UdpSocket) {
+    let mut buf = [0; 512];
+    let (amt, src) = socket.recv_from(&mut buf).expect("oops");
+    
+    let msg = Message::from(&mut buf[..amt]).expect("oops");
+    if msg.questions.len() != 1 {
+	panic!("Only 1 query supported!");
+	return;
+    }
+    if msg.questions[0].typ != 1 {
+	save_debug(&buf);
+	panic!("Only type 1 questions supported!");
+	return;
+    }
+    println!("Query for {:?}", msg.questions[0].name);
+    let resp = if let Some((a, ttl)) = cache.get(&msg.questions[0].name) {
+	println!("Found in cache");
+	create_response(&msg, &a, ttl)
+    } else {
+	println!("Forwarding");
+	let resp = send_query(&msg.questions[0].name).expect("oops");
+	if resp.rcode != 0 {
+	    panic!("Oops, todo!");
+	}
+	if let ResourceData::IPv4(a) = resp.answers[0].data {
+	    cache.insert(&resp.answers[0].name, &a, resp.answers[0].ttl as u64);
+	}
+	resp
+    };
+    let data = encode_reply(&msg, &resp).expect("oops");
+    socket.send_to(&data, src);    
+}
+
 fn main() {
     let mut cache = Cache::new();
-    let socket = UdpSocket::bind("0.0.0.0:3553").expect("oops");
-    
+    //let socket = UdpSocket::bind("0.0.0.0:3553").expect("oops");
+    let mut poll = mio::Poll::new().expect("ooops");
+    let mut server = mio::net::UdpSocket::bind("0.0.0.0:3553".parse().expect("oops")).expect("oops");
+
+    poll.registry().register(&mut server, mio::Token(0), mio::Interest::READABLE);
+
+    let mut events = mio::Events::with_capacity(128);
     loop {
-        let mut buf = [0; 512];
-        let (amt, src) = socket.recv_from(&mut buf).expect("oops");
-        
-        let msg = Message::from(&mut buf[..amt]).expect("oops");
-        if msg.questions.len() != 1 {
-            panic!("Only 1 query supported!");
-            continue;
-        }
-        if msg.questions[0].typ != 1 {
-	    save_debug(&buf);
-            panic!("Only type 1 questions supported!");
-            continue;
-        }
-	let resp = if let Some((a, ttl)) = cache.get(&msg.questions[0].name) {
-	    create_response(&msg, &a, ttl)
-	} else {
-            let resp = send_query(&msg.questions[0].name).expect("oops");
-	    if resp.rcode != 0 {
-		panic!("Oops, todo!");
+	poll.poll(&mut events, None).expect("ooops");
+	for e in events.iter() {
+	    match e.token() {
+		mio::Token(0) => {
+		    handle_conn(&mut cache, &mut server);
+		},
+		_ => unreachable!(),
 	    }
-	    if let ResourceData::IPv4(a) = resp.answers[0].data {
-		cache.insert(&resp.answers[0].name, &a, resp.answers[0].ttl as u64);
-	    }
-	    resp
-	};
-	let data = encode_reply(&msg, &resp).expect("oops");
-        socket.send_to(&data, src);
+	}
     }
 }

@@ -9,3 +9,4 @@ edition = "2021"
 byteorder = "*"
 log = "*"
 getrandom = "0.2"
+mio = { version = "0.8.4", features = ["net", "os-poll"] }
