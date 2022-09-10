@@ -600,7 +600,62 @@ fn handle_pending_query_(cache: &mut Cache, socket: &mut mio::net::UdpSocket, p:
     socket.send_to(&data, p.source);
 }
 
+struct ObjA {
+    name: String
+}
+
+struct ObjB {
+    value: String
+}
+
+fn obja_func(a: ObjA) {
+    println!("a: name: {:?}", a.name);
+}
+
+fn obja_mut_func(a: &mut ObjA) {
+    println!("a: name: {:?}", a.name);
+}
+
+fn objb_func(b: ObjB) {
+    println!("b: value: {:?}", b.value);
+}
+
+fn objb_mut_func(b: &mut ObjB) {
+    println!("b: value: {:?}", b.value);
+}
+
+struct Callable<T> {
+    obj: T,
+    f: fn(&mut T),
+}
+
+trait Callback {
+    fn cb(&mut self);
+}
+
+impl<T> Callback for Callable<T> {
+    fn cb(&mut self) {
+	(self.f)(&mut self.obj);
+    }
+}
+
+fn callback<T>(x: T, f: fn(T)) -> impl FnOnce() {
+    move || f(x)
+}
+
+fn test() {
+    let mut cs = Vec::<Box<dyn Callback>>::new();
+    let a = ObjA{name: "A".to_owned()};
+    let b = ObjB{value: "B".to_owned()};
+    cs.push(Box::new(Callable{obj: a, f: obja_mut_func}));
+    cs.push(Box::new(Callable{obj: b, f: objb_mut_func}));
+    for c in &mut cs {
+	c.cb();
+    }
+}
+
 fn main() {
+    test();
     let mut i = 0;
     let mut cache = Cache::new();
     //let socket = UdpSocket::bind("0.0.0.0:3553").expect("oops");
