@@ -437,6 +437,24 @@ fn genid() -> u16 {
     return ((buf[0] as u16) << 8) | (buf[1] as u16);
 }
 
+fn send_query_(name: &str) -> mio::net::UdpSocket {
+    let socket = mio::net::UdpSocket::bind("0.0.0.0:0".parse().expect("oops")).expect("oops");
+    socket.connect("9.9.9.9:53".parse().expect("oops")).expect("oops");
+    let mut msg = Message::new();
+    msg.id = genid() as u32;
+    msg.qr = 0; // query
+    msg.opcode = 0; // standard query
+    msg.rd = 1; // recursive query
+    msg.questions.push(Question{
+        name: name.to_owned(),
+        typ: 1, // A
+        class: 1, // IN
+    });
+    let data = msg.into_bytes().expect("oops");
+    socket.send(&data).expect("oops");
+    socket
+}
+
 fn send_query(name: &str) -> Result<Message, std::io::Error> {
     let socket = UdpSocket::bind("0.0.0.0:0").expect("oops");
     socket.connect((Ipv4Addr::new(9, 9, 9, 9), 53)).expect("oops");
@@ -544,13 +562,54 @@ fn handle_conn(cache: &mut Cache, socket: &mut mio::net::UdpSocket) {
     socket.send_to(&data, src);    
 }
 
+struct PendingQuery {
+    query: Message,
+    socket: mio::net::UdpSocket,
+    source: std::net::SocketAddr,
+}
+
+fn handle_conn_(cache: &mut Cache, socket: &mut mio::net::UdpSocket) -> PendingQuery {
+    let mut buf = [0; 512];
+    let (amt, src) = socket.recv_from(&mut buf).expect("oops");
+    
+    let msg = Message::from(&mut buf[..amt]).expect("oops");
+    if msg.questions.len() != 1 {
+	save_debug(&buf);
+	panic!("Only 1 query supported!");
+    }
+    if msg.questions[0].typ != 1 {
+	save_debug(&buf);
+	panic!("Only type 1 questions supported!");
+    }
+    println!("Query for {:?}", msg.questions[0].name);
+    let s = send_query_(&msg.questions[0].name);
+    PendingQuery{
+	query: msg,
+	socket: s,
+	source: src,
+    }
+}
+
+fn handle_pending_query_(cache: &mut Cache, socket: &mut mio::net::UdpSocket, p: PendingQuery) {
+    let mut buf = [0; 512];
+    let amt = p.socket.recv(&mut buf).expect("ooops");
+
+    let msg = Message::from(&mut buf[..amt]).expect("oops");
+
+    let data = encode_reply(&p.query, &msg).expect("oops");
+    socket.send_to(&data, p.source);
+}
+
 fn main() {
+    let mut i = 0;
     let mut cache = Cache::new();
     //let socket = UdpSocket::bind("0.0.0.0:3553").expect("oops");
     let mut poll = mio::Poll::new().expect("ooops");
     let mut server = mio::net::UdpSocket::bind("0.0.0.0:3553".parse().expect("oops")).expect("oops");
+    let mut pendings: HashMap<mio::Token, PendingQuery> = HashMap::new();
 
     poll.registry().register(&mut server, mio::Token(0), mio::Interest::READABLE);
+    
 
     let mut events = mio::Events::with_capacity(128);
     loop {
@@ -558,7 +617,17 @@ fn main() {
 	for e in events.iter() {
 	    match e.token() {
 		mio::Token(0) => {
-		    handle_conn(&mut cache, &mut server);
+		    let mut p = handle_conn_(&mut cache, &mut server);
+		    i += 1;
+		    let t = mio::Token(i);
+		    poll.registry().register(&mut p.socket, t, mio::Interest::READABLE);
+		    pendings.insert(t, p);
+		},
+		mio::Token(x) => {
+		    match pendings.remove(&mio::Token(x)) {
+			Some(p) => handle_pending_query_(&mut cache, &mut server, p),
+			None => panic!("oops"),
+		    }
 		},
 		_ => unreachable!(),
 	    }
