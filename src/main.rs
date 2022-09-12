@@ -608,6 +608,16 @@ struct ObjB {
     value: String
 }
 
+struct ObjC {
+    just: String
+}
+
+impl ObjC {
+    fn func(&mut self) {
+	println!("c: just: {:?}", self.just);
+    }
+}
+
 fn obja_func(a: ObjA) {
     println!("a: name: {:?}", a.name);
 }
@@ -639,23 +649,70 @@ impl<T> Callback for Callable<T> {
     }
 }
 
-fn callback<T>(x: T, f: fn(T)) -> impl FnOnce() {
-    move || f(x)
-}
-
 fn test() {
     let mut cs = Vec::<Box<dyn Callback>>::new();
     let a = ObjA{name: "A".to_owned()};
     let b = ObjB{value: "B".to_owned()};
+    let c = ObjC{just: "C".to_owned()};
     cs.push(Box::new(Callable{obj: a, f: obja_mut_func}));
     cs.push(Box::new(Callable{obj: b, f: objb_mut_func}));
+    cs.push(Box::new(Callable{obj: c, f: ObjC::func}));
     for c in &mut cs {
 	c.cb();
     }
 }
 
+struct Watcher<T> {
+    o: T,
+    cb: fn(&mut T),
+}
+
+trait Dispatcher {
+    fn dispatch(&mut self);
+}
+
+impl<T> Dispatcher for Watcher<T> {
+    fn dispatch(&mut self) {
+	(self.cb)(&mut self.o);
+    }
+}
+
+struct Loop {
+    poll: mio::Poll,
+    watchers: HashMap<mio::Token, Box<dyn Dispatcher>>,
+}
+
+
+impl Loop {
+    fn new() -> Loop {
+	Loop{
+	    poll: mio::Poll::new().expect("oops"),
+	    watchers: HashMap::new(),
+	}
+    }
+    fn register<T: 'static, S>(&mut self, src: &mut S, interests: mio::Interest, obj: T, cb: fn(&mut T))
+    where S: mio::event::Source + ?Sized {
+	self.poll.registry().register(src, mio::Token(0), interests);
+	self.watchers.insert(mio::Token(0), Box::new(Watcher{o: obj, cb: cb}));
+    }
+
+    fn fake_register<T: 'static>(&mut self, obj: T, cb: fn(&mut T))
+    {
+	self.watchers.insert(mio::Token(0), Box::new(Watcher{o: obj, cb: cb}));
+    }
+}
+
+fn test2() {
+    let mut l = Loop::new();
+
+    let a = ObjA{name: "A".to_owned()};
+
+    l.fake_register(a, obja_mut_func);
+}
+
 fn main() {
     test();
+    test2();
     let mut i = 0;
     let mut cache = Cache::new();
     //let socket = UdpSocket::bind("0.0.0.0:3553").expect("oops");
