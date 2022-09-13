@@ -680,25 +680,41 @@ impl<T> Dispatcher for Watcher<T> {
 struct Loop {
     poll: mio::Poll,
     watchers: HashMap<mio::Token, Box<dyn Dispatcher>>,
+    next_token: usize,
 }
-
 
 impl Loop {
     fn new() -> Loop {
 	Loop{
 	    poll: mio::Poll::new().expect("oops"),
 	    watchers: HashMap::new(),
+	    next_token: 0,
 	}
     }
-    fn register<T: 'static, S>(&mut self, src: &mut S, interests: mio::Interest, obj: T, cb: fn(&mut T))
+
+    fn watch<S>(&mut self, src: &mut S, interests: mio::Interest) -> mio::Token
     where S: mio::event::Source + ?Sized {
-	self.poll.registry().register(src, mio::Token(0), interests);
-	self.watchers.insert(mio::Token(0), Box::new(Watcher{o: obj, cb: cb}));
+	self.next_token += 1;
+	let t = mio::Token(self.next_token);
+	self.poll.registry().register(src, t, interests);
+	t
     }
 
-    fn fake_register<T: 'static>(&mut self, obj: T, cb: fn(&mut T))
-    {
-	self.watchers.insert(mio::Token(0), Box::new(Watcher{o: obj, cb: cb}));
+    fn set_callback<T: 'static>(&mut self, t: mio::Token, obj: T, cb: fn(&mut T)) {
+	self.watchers.insert(t, Box::new(Watcher{o: obj, cb: cb}));
+    }
+    
+    fn run(&mut self) {
+	let mut events = mio::Events::with_capacity(128);
+	loop {
+	    self.poll.poll(&mut events, None).expect("oops");
+	    for e in events.iter() {
+		match self.watchers.get_mut(&e.token()) {
+		    Some(d) => d.dispatch(),
+		    None => panic!("oops"),
+		}
+	    }
+	}
     }
 }
 
@@ -706,13 +722,43 @@ fn test2() {
     let mut l = Loop::new();
 
     let a = ObjA{name: "A".to_owned()};
+}
 
-    l.fake_register(a, obja_mut_func);
+fn read_question(socket: &mut mio::net::UdpSocket) -> Message {
+    let mut buf = [0; 512];
+    let (amt, src) = socket.recv_from(&mut buf).expect("oops");
+    
+    let msg = Message::from(&mut buf[..amt]).expect("oops");
+    if msg.questions.len() != 1 {
+	save_debug(&buf);
+	panic!("Only 1 query supported!");
+    }
+    if msg.questions[0].typ != 1 {
+	save_debug(&buf);
+	panic!("Only type 1 questions supported!");
+    }
+    msg
+}
+
+fn server_read(server: &mut mio::net::UdpSocket) {
+    let mut q = read_question(server);
+    println!("Got question!!");
+}
+
+fn test3() {
+    let mut l = Loop::new();
+    //let mut server = Rc::new(RefCell::new(mio::net::UdpSocket::bind("0.0.0.0:3553".parse().expect("oops")).expect("oops")));
+    let mut server = mio::net::UdpSocket::bind("0.0.0.0:3553".parse().expect("oops")).expect("oops");
+
+    let t = l.watch(&mut server, mio::Interest::READABLE);
+    l.set_callback(t, server, server_read);
+    l.run();
 }
 
 fn main() {
     test();
     test2();
+    test3();
     let mut i = 0;
     let mut cache = Cache::new();
     //let socket = UdpSocket::bind("0.0.0.0:3553").expect("oops");
@@ -722,7 +768,6 @@ fn main() {
 
     poll.registry().register(&mut server, mio::Token(0), mio::Interest::READABLE);
     
-
     let mut events = mio::Events::with_capacity(128);
     loop {
 	poll.poll(&mut events, None).expect("ooops");
