@@ -21,6 +21,7 @@ use std::ops::Deref;
 mod nametree;
 mod tokengen;
 
+#[derive(Debug)]
 struct CacheEntry {
     a: Ipv4Addr,
     expiry: Instant,
@@ -41,6 +42,7 @@ impl CacheEntry {
     }
 }
 
+#[derive(Debug)]
 struct Cache {
     table: HashMap<String, CacheEntry>,
 }
@@ -734,7 +736,6 @@ struct Server {
 }
 type RRServer = Rc<RefCell<Server>>;
 
-
 struct Q {
     server: RRServer,
     source: std::net::SocketAddr,
@@ -765,6 +766,19 @@ fn read_question(server: &mut RRServer) -> Q {
 fn server_read(server: &mut RRServer) {
     let mut q = read_question(server);
     println!("Got question!!");
+    let name = q.message.questions[0].name.to_owned();
+    match server.borrow_mut().pending_questions.entry(q.message.questions[0].name.to_owned()) {
+	Entry::Occupied(v) => v.into_mut().push(q),
+	Entry::Vacant(e) => { let mut v = Vec::new(); v.push(q); e.insert(v);},
+    }
+    match server.borrow().pending_questions.get(&name) {
+	Some(v) => {
+	    for q in v {
+		println!("{:?}", q.message);
+	    }
+	},	    
+	_ => panic!("oops"),
+    }
 }
 
 fn test3() {
