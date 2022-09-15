@@ -16,6 +16,7 @@ use std::net::Ipv6Addr;
 use std::net::UdpSocket;
 use std::rc::Rc;
 use std::time::{Instant, Duration};
+use std::ops::Deref;
 
 mod nametree;
 mod tokengen;
@@ -724,33 +725,58 @@ fn test2() {
     let a = ObjA{name: "A".to_owned()};
 }
 
-fn read_question(socket: &mut mio::net::UdpSocket) -> Message {
+type RRSocket = Rc<RefCell<mio::net::UdpSocket>>;
+
+struct Server {
+    socket: mio::net::UdpSocket,
+    pending_questions: HashMap<String, Vec<Q>>,
+    cache: Cache,
+}
+type RRServer = Rc<RefCell<Server>>;
+
+
+struct Q {
+    server: RRServer,
+    source: std::net::SocketAddr,
+    message: Message,
+}
+
+fn read_question(server: &mut RRServer) -> Q {
     let mut buf = [0; 512];
-    let (amt, src) = socket.recv_from(&mut buf).expect("oops");
+    let (amount, source) = server.borrow_mut().socket.recv_from(&mut buf).expect("oops");
     
-    let msg = Message::from(&mut buf[..amt]).expect("oops");
-    if msg.questions.len() != 1 {
+    let message = Message::from(&mut buf[..amount]).expect("oops");
+    if message.questions.len() != 1 {
 	save_debug(&buf);
 	panic!("Only 1 query supported!");
     }
-    if msg.questions[0].typ != 1 {
+    if message.questions[0].typ != 1 {
 	save_debug(&buf);
-	panic!("Only type 1 questions supported!");
+	panic!("Only type A questions supported!");
     }
-    msg
+    Q{
+	server: server.clone(),
+	source,
+	message,
+    }
 }
 
-fn server_read(server: &mut mio::net::UdpSocket) {
+
+fn server_read(server: &mut RRServer) {
     let mut q = read_question(server);
     println!("Got question!!");
 }
 
 fn test3() {
     let mut l = Loop::new();
-    //let mut server = Rc::new(RefCell::new(mio::net::UdpSocket::bind("0.0.0.0:3553".parse().expect("oops")).expect("oops")));
-    let mut server = mio::net::UdpSocket::bind("0.0.0.0:3553".parse().expect("oops")).expect("oops");
+    let server = Rc::new(RefCell::new(Server{
+	socket: mio::net::UdpSocket::bind("0.0.0.0:3553".parse().expect("oops")).expect("oops"),
+	pending_questions: HashMap::new(),
+	cache: Cache::new(),
+    }));
 
-    let t = l.watch(&mut server, mio::Interest::READABLE);
+    //let mut server = Rc::new(RefCell::new(mio::net::UdpSocket::bind("0.0.0.0:3553".parse().expect("oops")).expect("oops")));
+    let t = l.watch(&mut (*server).borrow_mut().socket, mio::Interest::READABLE);
     l.set_callback(t, server, server_read);
     l.run();
 }
