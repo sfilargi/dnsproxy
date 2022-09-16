@@ -698,8 +698,9 @@ impl Loop {
     fn watch<S>(&mut self, src: &mut S, interests: mio::Interest) -> mio::Token
     where S: mio::event::Source + ?Sized {
 	self.next_token += 1;
+	println!("Adding watcher {:?}", self.next_token);
 	let t = mio::Token(self.next_token);
-	self.poll.registry().register(src, t, interests);
+	self.poll.registry().register(src, t, interests).expect("oops");
 	t
     }
 
@@ -712,6 +713,7 @@ impl Loop {
 	loop {
 	    self.poll.poll(&mut events, None).expect("oops");
 	    for e in events.iter() {
+		println!("Event, token: {:?}", &e.token());
 		match self.watchers.get_mut(&e.token()) {
 		    Some(d) => d.clone().borrow_mut().dispatch(self),
 		    None => panic!("oops"),
@@ -782,8 +784,13 @@ fn upstream_query(name: &str) -> mio::net::UdpSocket {
         class: 1, // IN
     });
     let data = msg.into_bytes().expect("oops");
+    println!("Sent..");
     socket.send(&data).expect("oops");
     socket
+}
+
+fn upstream_reply(_: &mut mio::net::UdpSocket, l: &mut Loop) {
+    println!("Reply!");
 }
 
 fn server_read(server: &mut RRServer, l: &mut Loop) {
@@ -802,7 +809,10 @@ fn server_read(server: &mut RRServer, l: &mut Loop) {
 	},	    
 	_ => panic!("oops"),
     }
-    let upstream_socket = upstream_query(&name);
+    let mut upstream_socket = upstream_query(&name);
+    println!("socket: {:?}", upstream_socket);
+    let t = l.watch(&mut upstream_socket, mio::Interest::READABLE);
+    l.set_callback(t, upstream_socket, upstream_reply);
 }
 
 fn test3() {
@@ -825,7 +835,7 @@ fn main() {
     let mut i = 0;
     let mut cache = Cache::new();
     //let socket = UdpSocket::bind("0.0.0.0:3553").expect("oops");
-    let mut poll = mio::Poll::new().expect("ooops");
+    let mut poll = mio::Poll::new().expect("oops");
     let mut server = mio::net::UdpSocket::bind("0.0.0.0:3553".parse().expect("oops")).expect("oops");
     let mut pendings: HashMap<mio::Token, PendingQuery> = HashMap::new();
 
