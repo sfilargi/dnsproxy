@@ -667,22 +667,22 @@ fn test() {
 
 struct Watcher<T> {
     o: T,
-    cb: fn(&mut T),
+    cb: fn(&mut T, &mut Loop),
 }
 
 trait Dispatcher {
-    fn dispatch(&mut self);
+    fn dispatch(&mut self, l: &mut Loop);
 }
 
 impl<T> Dispatcher for Watcher<T> {
-    fn dispatch(&mut self) {
-	(self.cb)(&mut self.o);
+    fn dispatch(&mut self, l: &mut Loop) {
+	(self.cb)(&mut self.o, l);
     }
 }
 
 struct Loop {
     poll: mio::Poll,
-    watchers: HashMap<mio::Token, Box<dyn Dispatcher>>,
+    watchers: HashMap<mio::Token, Rc<RefCell<dyn Dispatcher>>>,
     next_token: usize,
 }
 
@@ -703,8 +703,8 @@ impl Loop {
 	t
     }
 
-    fn set_callback<T: 'static>(&mut self, t: mio::Token, obj: T, cb: fn(&mut T)) {
-	self.watchers.insert(t, Box::new(Watcher{o: obj, cb: cb}));
+    fn set_callback<T: 'static>(&mut self, t: mio::Token, obj: T, cb: fn(&mut T, &mut Loop)) {
+	self.watchers.insert(t, Rc::new(RefCell::new(Watcher{o: obj, cb: cb})));
     }
     
     fn run(&mut self) {
@@ -713,7 +713,7 @@ impl Loop {
 	    self.poll.poll(&mut events, None).expect("oops");
 	    for e in events.iter() {
 		match self.watchers.get_mut(&e.token()) {
-		    Some(d) => d.dispatch(),
+		    Some(d) => d.clone().borrow_mut().dispatch(self),
 		    None => panic!("oops"),
 		}
 	    }
@@ -742,6 +742,12 @@ struct Q {
     message: Message,
 }
 
+// Upstream Question
+struct UQ {
+    server: RRServer,
+    socket: mio::net::UdpSocket,
+}
+
 fn read_question(server: &mut RRServer) -> Q {
     let mut buf = [0; 512];
     let (amount, source) = server.borrow_mut().socket.recv_from(&mut buf).expect("oops");
@@ -762,8 +768,25 @@ fn read_question(server: &mut RRServer) -> Q {
     }
 }
 
+fn upstream_query(name: &str) -> mio::net::UdpSocket {
+    let socket = mio::net::UdpSocket::bind("0.0.0.0:0".parse().expect("oops")).expect("oops");
+    socket.connect("9.9.9.9:53".parse().expect("oops")).expect("oops");
+    let mut msg = Message::new();
+    msg.id = genid() as u32;
+    msg.qr = 0; // query
+    msg.opcode = 0; // standard query
+    msg.rd = 1; // recursive query
+    msg.questions.push(Question{
+        name: name.to_owned(),
+        typ: 1, // A
+        class: 1, // IN
+    });
+    let data = msg.into_bytes().expect("oops");
+    socket.send(&data).expect("oops");
+    socket
+}
 
-fn server_read(server: &mut RRServer) {
+fn server_read(server: &mut RRServer, l: &mut Loop) {
     let mut q = read_question(server);
     println!("Got question!!");
     let name = q.message.questions[0].name.to_owned();
@@ -779,6 +802,7 @@ fn server_read(server: &mut RRServer) {
 	},	    
 	_ => panic!("oops"),
     }
+    let upstream_socket = upstream_query(&name);
 }
 
 fn test3() {
@@ -789,7 +813,6 @@ fn test3() {
 	cache: Cache::new(),
     }));
 
-    //let mut server = Rc::new(RefCell::new(mio::net::UdpSocket::bind("0.0.0.0:3553".parse().expect("oops")).expect("oops")));
     let t = l.watch(&mut (*server).borrow_mut().socket, mio::Interest::READABLE);
     l.set_callback(t, server, server_read);
     l.run();
