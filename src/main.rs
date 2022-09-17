@@ -707,6 +707,15 @@ impl Loop {
     fn set_callback<T: 'static>(&mut self, t: mio::Token, obj: T, cb: fn(&mut T, &mut Loop)) {
 	self.watchers.insert(t, Rc::new(RefCell::new(Watcher{o: obj, cb: cb})));
     }
+
+    fn clear_callbacks(&mut self, t: &mio::Token) {
+	self.watchers.remove(t);
+    }
+
+    fn unwatch<S>(&mut self, src: &mut S)
+    where S: mio::event::Source + ?Sized {
+	self.poll.registry().deregister(src);
+    }
     
     fn run(&mut self) {
 	let mut events = mio::Events::with_capacity(128);
@@ -747,6 +756,7 @@ struct Q {
 // Upstream Question
 struct UQ {
     server: RRServer,
+    token: mio::Token,
     socket: mio::net::UdpSocket,
 }
 
@@ -789,8 +799,22 @@ fn upstream_query(name: &str) -> mio::net::UdpSocket {
     socket
 }
 
-fn upstream_reply(_: &mut mio::net::UdpSocket, l: &mut Loop) {
-    println!("Reply!");
+fn upstream_reply(uq: &mut UQ, l: &mut Loop) {
+    let mut buf = [0; 512];
+    let amt = uq.socket.recv(&mut buf).expect("ooops");
+
+    let msg = Message::from(&mut buf[..amt]).expect("oops");
+
+    // Reply to all pending questions depending on this
+    for pqs in uq.server.borrow().pending_questions.get(&msg.questions[0].name) {
+	for pq in pqs {
+	    let data = encode_reply(&pq.message, &msg).expect("oops");
+	    uq.server.borrow().socket.send_to(&data, pq.source);
+	}
+    }
+    uq.server.borrow_mut().pending_questions.remove(&msg.questions[0].name);
+    l.clear_callbacks(&uq.token);
+    l.unwatch(&mut uq.socket);
 }
 
 fn server_read(server: &mut RRServer, l: &mut Loop) {
@@ -812,7 +836,12 @@ fn server_read(server: &mut RRServer, l: &mut Loop) {
     let mut upstream_socket = upstream_query(&name);
     println!("socket: {:?}", upstream_socket);
     let t = l.watch(&mut upstream_socket, mio::Interest::READABLE);
-    l.set_callback(t, upstream_socket, upstream_reply);
+    let uq = UQ{
+	server: server.clone(),
+	socket: upstream_socket,
+	token: t,
+    };
+    l.set_callback(t, uq, upstream_reply);
 }
 
 fn test3() {
