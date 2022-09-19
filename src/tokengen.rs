@@ -1,6 +1,6 @@
 use std::mem;
 
-struct TokenGen {
+pub struct TokenGen {
     bitmap: Vec<u64>,
 }
 

@@ -18,6 +18,7 @@ use std::rc::Rc;
 use std::time::{Instant, Duration};
 use std::ops::Deref;
 
+mod evloop;
 mod nametree;
 mod tokengen;
 
@@ -794,7 +795,6 @@ fn upstream_query(name: &str) -> mio::net::UdpSocket {
         class: 1, // IN
     });
     let data = msg.into_bytes().expect("oops");
-    println!("Sent..");
     socket.send(&data).expect("oops");
     socket
 }
@@ -819,7 +819,6 @@ fn upstream_reply(uq: &mut UQ, l: &mut Loop) {
 
 fn server_read(server: &mut RRServer, l: &mut Loop) {
     let mut q = read_question(server);
-    println!("Got question!!");
     let name = q.message.questions[0].name.to_owned();
     match server.borrow_mut().pending_questions.entry(q.message.questions[0].name.to_owned()) {
 	Entry::Occupied(v) => v.into_mut().push(q),
