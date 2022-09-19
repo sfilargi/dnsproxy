@@ -71,5 +71,11 @@ struct EvLoop {
 }
 
 impl EvLoop {
-    
+    fn new() -> io::Result<EvLoop> {
+	Ok(EvLoop{
+	    fd: epoll_create()?,
+	    token_gen: TokenGen::new(),
+	    watchers: Vec::new(),
+	})
+    }
 }
