@@ -70,7 +70,6 @@ impl<F, T> FDWatcher<F, T> where F: AsRawFd {
     }
 }
 
-
 trait FDDispatchable {
     fn fd(&self) -> &dyn AsRawFd;
     fn dispatch(&mut self, el: &mut EvLoop) -> EvResult;
@@ -117,10 +116,15 @@ bitflags! {
     }
 }
 
+struct EvFdWatcher {
+    fd: RawFd,
+    w: Rc<RefCell<dyn FDDispatchable>>,
+}
+
 struct EvLoop {
     fd: EpollFd,
     token_factory: TokenFactory,
-    watchers: Vec<Rc<RefCell<dyn FDDispatchable>>>,
+    watchers: Vec<EvFdWatcher>,
 }
 
 impl EvLoop {
@@ -144,13 +148,17 @@ impl EvLoop {
 	println!("Adding... fd: {}, {}", fd.as_raw_fd(), events);
 	let token = self.token_factory.acquire();
 	epoll_ctl(&self.fd, libc::EPOLL_CTL_ADD, fd.as_raw_fd(), Event{events: events as u32, data: token});
-	self.watchers.push(Rc::new(RefCell::new(FDWatcher::new(fd, object, callback))));
+	self.watchers.push(EvFdWatcher{
+	    fd: fd.as_raw_fd(),
+	    w: Rc::new(RefCell::new(FDWatcher::new(fd, object, callback)))
+	});
     }
 
     fn unwatch(&mut self, token: u64) {
-	let w = self.watchers[0].clone();
-	let fd = w.borrow().fd().as_raw_fd();
+	let fd = self.watchers[0].fd;
 	epoll_ctl(&self.fd, libc::EPOLL_CTL_DEL, fd, Event{events: 0, data: 0});
+	self.watchers.pop();
+	println!("Done done done!");
     }
 
     pub fn run(&mut self) {
@@ -178,7 +186,7 @@ impl EvLoop {
 	    for event in &events {
 		let token = event.data;
 		println!("Got event! {}", token);
-		let w = self.watchers[0].clone();
+		let w = self.watchers[0].w.clone();
 		let res = w.borrow_mut().dispatch(self);
 		match res {
 		    EvResult::DONE => self.unwatch(1),
@@ -204,7 +212,8 @@ mod tests {
 	let mut buf: [u8; 128] = [0; 128];
 	let x = fd.read(&mut buf).expect("oops");
 	if x == 0 {
-	    return EvResult::DONE;
+	    ev.unwatch(0);
+	    return EvResult::AGAIN;
 	}
 	println!("Getting there! {}, {}", x, from_utf8(&buf).expect("oops"));
 	fd.write(&buf);
