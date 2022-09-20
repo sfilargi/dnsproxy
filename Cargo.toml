@@ -10,4 +10,6 @@ libc = "*"
 byteorder = "*"
 log = "*"
 getrandom = "0.2"
+bitflags = "*"
 mio = { version = "0.8.4", features = ["net", "os-poll"] }
+socketpair = "*"
