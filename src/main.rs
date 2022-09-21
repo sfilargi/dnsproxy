@@ -17,7 +17,7 @@ use std::net::UdpSocket;
 use std::rc::Rc;
 use std::time::{Instant, Duration};
 use std::ops::Deref;
-
+    
 mod evloop;
 mod nametree;
 mod tokengen;
@@ -761,6 +761,22 @@ struct UQ {
     socket: mio::net::UdpSocket,
 }
 
+async fn read_question_a(server: &mut tokio::net::UdpSocket) -> Result<Message, std::io::Error> {
+    let mut buf = [0; 512];
+    let (amount, source) = server.recv_from(&mut buf).await?;
+    
+    let message = Message::from(&mut buf[..amount]).expect("oops");
+    if message.questions.len() != 1 {
+	save_debug(&buf);
+	panic!("Only 1 query supported!");
+    }
+    if message.questions[0].typ != 1 {
+	save_debug(&buf);
+	panic!("Only type A questions supported!");
+    }
+    Ok(message)
+}
+
 fn read_question(server: &mut RRServer) -> Q {
     let mut buf = [0; 512];
     let (amount, source) = server.borrow_mut().socket.recv_from(&mut buf).expect("oops");
@@ -856,7 +872,7 @@ fn test3() {
     l.run();
 }
 
-fn main() {
+fn main_old() {
     test();
     test2();
     test3();
@@ -891,4 +907,12 @@ fn main() {
 	    }
 	}
     }
+}
+
+
+#[tokio::main]
+async fn main() -> Result<(), std::io::Error> {
+    let mut server = tokio::net::UdpSocket::bind("0.0.0.0:3553").await?;
+    let mut q = read_question_a(&mut server).await?;
+    Ok(())
 }
