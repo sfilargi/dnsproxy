@@ -22,6 +22,7 @@ mod evloop;
 mod nametree;
 mod tokengen;
 
+
 #[derive(Debug)]
 struct CacheEntry {
     a: Ipv4Addr,
@@ -761,7 +762,12 @@ struct UQ {
     socket: mio::net::UdpSocket,
 }
 
-async fn read_question_a(server: &mut tokio::net::UdpSocket) -> Result<Message, std::io::Error> {
+struct QQ {
+    source: std::net::SocketAddr,
+    message: Message,
+}
+
+async fn read_question_a(server: &mut tokio::net::UdpSocket) -> Result<QQ, std::io::Error> {
     let mut buf = [0; 512];
     let (amount, source) = server.recv_from(&mut buf).await?;
     
@@ -774,7 +780,10 @@ async fn read_question_a(server: &mut tokio::net::UdpSocket) -> Result<Message, 
 	save_debug(&buf);
 	panic!("Only type A questions supported!");
     }
-    Ok(message)
+    Ok(QQ{
+	source,
+	message
+    })
 }
 
 fn read_question(server: &mut RRServer) -> Q {
@@ -910,9 +919,55 @@ fn main_old() {
 }
 
 
+fn send_response_a(q: &QQ, a: &Ipv4Addr, ttl: u64) {
+}
+
+async fn udp_server(questions: tokio::sync::mpsc::Sender<Vec<u8>>,
+		    mut answers: tokio::sync::mpsc::Receiver<Vec<u8>>) -> Result<(), std::io::Error> {
+    let mut server = tokio::net::UdpSocket::bind("0.0.0.0:3553").await?;
+    loop {
+	let mut buf = [0; 512];
+	tokio::select! {
+	    Ok((amt, source)) = server.recv_from(&mut buf) => {
+		questions.send(buf[0..amt].to_vec()).await;
+	    },
+	    Some(data) = answers.recv() => {
+		println!("Answer!");
+	    },
+	}
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
-    let mut server = tokio::net::UdpSocket::bind("0.0.0.0:3553").await?;
-    let mut q = read_question_a(&mut server).await?;
+    let mut cache = Cache::new();
+    let (udp_q_tx, mut udp_q_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
+    let (udp_r_tx, udp_r_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
+    tokio::spawn(udp_server(udp_q_tx, udp_r_rx));
+
+    loop {
+	tokio::select!{
+	    Some(mut qdata) = udp_q_rx.recv() => {
+		let message = Message::from(&mut qdata).expect("oops");
+		if message.questions.len() != 1 {
+		    save_debug(&qdata);
+		    panic!("Only 1 query supported!");
+		}
+		if message.questions[0].typ != 1 {
+		    save_debug(&qdata);
+		    panic!("Only type A questions supported!");
+		}
+		println!("{:?}", message);
+	    }
+	    else => {
+		panic!("oops");
+	    }
+	}
+    }
+    // let mut q = read_question_a(&mut server).await?;
+    // if let Some((a, ttl)) = cache.get(&q.message.questions[0].name) {
+    // 	send_response_a(&q, &a, ttl);
+    // }
     Ok(())
 }
