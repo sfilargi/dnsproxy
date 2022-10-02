@@ -922,43 +922,93 @@ fn main_old() {
 fn send_response_a(q: &QQ, a: &Ipv4Addr, ttl: u64) {
 }
 
-async fn udp_server(questions: tokio::sync::mpsc::Sender<Vec<u8>>,
-		    mut answers: tokio::sync::mpsc::Receiver<Vec<u8>>) -> Result<(), std::io::Error> {
-    let mut server = tokio::net::UdpSocket::bind("0.0.0.0:3553").await?;
+struct FwdrAnswer {
+    name: String,
+    a: Ipv4Addr,
+    ttl: u64,
+}
+
+struct FwdrQuestion {
+    name: String,
+    rsp_to: tokio::sync::mpsc::Sender<FwdrAnswer>,
+}
+
+async fn forwarder(mut qs: tokio::sync::mpsc::Receiver<FwdrQuestion>) -> Result<(), std::io::Error> {
     loop {
-	let mut buf = [0; 512];
 	tokio::select! {
-	    Ok((amt, source)) = server.recv_from(&mut buf) => {
-		questions.send(buf[0..amt].to_vec()).await;
-	    },
-	    Some(data) = answers.recv() => {
-		println!("Answer!");
+	    Some(q) = qs.recv() => {
+		println!("Forwarder got a question");
+		q.rsp_to.send(FwdrAnswer{
+		    name: q.name.to_owned(),
+		    a: "127.0.0.1".parse().expect("oops"),
+		    ttl: 1,
+		}).await;
 	    },
 	}
     }
     Ok(())
 }
 
+async fn udp_server(questions: tokio::sync::mpsc::Sender<(Vec<u8>, std::net::SocketAddr)>,
+		    mut answers: tokio::sync::mpsc::Receiver<(Vec<u8>, std::net::SocketAddr)>)
+		    -> Result<(), std::io::Error> {
+    let mut server = tokio::net::UdpSocket::bind("0.0.0.0:3553").await?;
+    loop {
+	let mut buf = [0; 512];
+	tokio::select! {
+	    Ok((amt, source)) = server.recv_from(&mut buf) => {
+		questions.send((buf[0..amt].to_vec(), source)).await;
+	    },
+	    Some((data, source)) = answers.recv() => {
+		println!("Answer! {:?}, {:?}", data, source);
+		server.send_to(&data.to_vec(), source).await;
+	    },
+	}
+    }
+    Ok(())
+}
+
+async fn handle_question(src: std::net::SocketAddr, message: Message,
+			 mut fwder: tokio::sync::mpsc::Sender<FwdrQuestion>,
+			 rsp_to: tokio::sync::mpsc::Sender<(Vec<u8>, std::net::SocketAddr)>) {
+    if message.questions.len() != 1 {
+	panic!("Only 1 query supported!");
+    }
+    if message.questions[0].typ != 1 {
+	panic!("Only type A questions supported!");
+    }
+    println!("{:?}", message);
+    let name = &message.questions[0].name;
+    let (f_tx, mut f_rx) = tokio::sync::mpsc::channel::<FwdrAnswer>(1);
+    let fq = FwdrQuestion{
+	name: name.to_owned(),
+	rsp_to: f_tx,
+    };
+    fwder.send(fq).await;
+    if let Some(fa) = f_rx.recv().await {
+	println!("Got response from forwader!");
+	let answer = create_response(&message, &fa.a, fa.ttl);
+	let data = encode_reply(&message, &answer).expect("oops");
+	rsp_to.send((data, src)).await;
+    }
+    
+}
+
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
     let mut cache = Cache::new();
-    let (udp_q_tx, mut udp_q_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
-    let (udp_r_tx, udp_r_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
+    let (udp_q_tx, mut udp_q_rx) = tokio::sync::mpsc::channel::<(Vec<u8>, std::net::SocketAddr)>(128);
+    let (udp_r_tx, udp_r_rx) = tokio::sync::mpsc::channel::<(Vec<u8>, std::net::SocketAddr)>(128);
     tokio::spawn(udp_server(udp_q_tx, udp_r_rx));
+
+    let (fwd_q_tx, fwd_q_rx) = tokio::sync::mpsc::channel::<FwdrQuestion>(128);
+    tokio::spawn(forwarder(fwd_q_rx));
 
     loop {
 	tokio::select!{
-	    Some(mut qdata) = udp_q_rx.recv() => {
-		let message = Message::from(&mut qdata).expect("oops");
-		if message.questions.len() != 1 {
-		    save_debug(&qdata);
-		    panic!("Only 1 query supported!");
-		}
-		if message.questions[0].typ != 1 {
-		    save_debug(&qdata);
-		    panic!("Only type A questions supported!");
-		}
-		println!("{:?}", message);
+	    Some((mut qdata, src)) = udp_q_rx.recv() => {
+		handle_question(src, Message::from(&mut qdata).expect("oops"),
+				fwd_q_tx.clone(), udp_r_tx.clone()).await;
 	    }
 	    else => {
 		panic!("oops");
