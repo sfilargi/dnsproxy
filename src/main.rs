@@ -933,16 +933,59 @@ struct FwdrQuestion {
     rsp_to: tokio::sync::mpsc::Sender<FwdrAnswer>,
 }
 
+async fn upstream_query_a(socket: &mut tokio::net::UdpSocket, name: &str) -> Result<(), std::io::Error> {
+    let mut msg = Message::new();
+    msg.id = genid() as u32;
+    msg.qr = 0; // query
+    msg.opcode = 0; // standard query
+    msg.rd = 1; // recursive query
+    msg.questions.push(Question{
+        name: name.to_owned(),
+        typ: 1, // A
+        class: 1, // IN
+    });
+    let data = msg.into_bytes().expect("oops");
+    println!("send to upstream");
+    socket.send(&data).await.expect("oops");
+    Ok(())
+}
+
+async fn upstream_reply_a(socket: &mut tokio::net::UdpSocket) -> Result<FwdrAnswer, std::io::Error> {
+    println!("Waiting upstream reply");
+    let mut buf = [0; 512];
+    let amt = socket.recv(&mut buf).await?;
+    println!("Got reply from upstream");
+
+    let msg = Message::from(&mut buf[..amt])?;
+    if msg.rcode != 0 {
+	panic!("oops");
+    }
+    if let ResourceData::IPv4(a) = msg.answers[0].data {
+	return Ok(FwdrAnswer{
+	    name: msg.answers[0].name.to_owned(),
+	    a: a,
+	    ttl: msg.answers[0].ttl as u64,
+	});
+    }
+    panic!("oops");
+}
+
+async fn handle_fwd(q: FwdrQuestion) -> Result<(), std::io::Error> {
+    let mut socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+    socket.connect("9.9.9.9:53").await.expect("oops");
+    println!("Resolver got question");
+    upstream_query_a(&mut socket, &q.name).await?;
+    println!("Resolver forwarded question");
+    let answer = upstream_reply_a(&mut socket).await?;
+    q.rsp_to.send(answer).await;
+    Ok(())
+}
+
 async fn forwarder(mut qs: tokio::sync::mpsc::Receiver<FwdrQuestion>) -> Result<(), std::io::Error> {
     loop {
 	tokio::select! {
 	    Some(q) = qs.recv() => {
-		println!("Forwarder got a question");
-		q.rsp_to.send(FwdrAnswer{
-		    name: q.name.to_owned(),
-		    a: "127.0.0.1".parse().expect("oops"),
-		    ttl: 1,
-		}).await;
+		handle_fwd(q).await;
 	    },
 	}
     }
@@ -960,9 +1003,11 @@ async fn udp_server(questions: tokio::sync::mpsc::Sender<(Vec<u8>, std::net::Soc
 		questions.send((buf[0..amt].to_vec(), source)).await;
 	    },
 	    Some((data, source)) = answers.recv() => {
-		println!("Answer! {:?}, {:?}", data, source);
 		server.send_to(&data.to_vec(), source).await;
 	    },
+	    else => {
+		panic!("oops");
+	    }
 	}
     }
     Ok(())
