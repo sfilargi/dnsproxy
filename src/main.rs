@@ -971,12 +971,12 @@ async fn upstream_reply_a(socket: &mut tokio::net::UdpSocket) -> Result<FwdrAnsw
 }
 
 async fn handle_fwd(q: FwdrQuestion) -> Result<(), std::io::Error> {
-    let mut socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+    let mut socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await.expect("oops");
     socket.connect("9.9.9.9:53").await.expect("oops");
     println!("Resolver got question");
-    upstream_query_a(&mut socket, &q.name).await?;
+    upstream_query_a(&mut socket, &q.name).await.expect("oops");
     println!("Resolver forwarded question");
-    let answer = upstream_reply_a(&mut socket).await?;
+    let answer = upstream_reply_a(&mut socket).await.expect("oops");
     q.rsp_to.send(answer).await;
     Ok(())
 }
@@ -995,7 +995,7 @@ async fn forwarder(mut qs: tokio::sync::mpsc::Receiver<FwdrQuestion>) -> Result<
 async fn udp_server(questions: tokio::sync::mpsc::Sender<(Vec<u8>, std::net::SocketAddr)>,
 		    mut answers: tokio::sync::mpsc::Receiver<(Vec<u8>, std::net::SocketAddr)>)
 		    -> Result<(), std::io::Error> {
-    let mut server = tokio::net::UdpSocket::bind("0.0.0.0:3553").await?;
+    let mut server = tokio::net::UdpSocket::bind("0.0.0.0:3553").await.expect("oops");
     loop {
 	let mut buf = [0; 512];
 	tokio::select! {
@@ -1060,7 +1060,7 @@ async fn main() -> Result<(), std::io::Error> {
 	    }
 	}
     }
-    // let mut q = read_question_a(&mut server).await?;
+    // let mut q = read_question_a(&mut server).await.expect("oops");
     // if let Some((a, ttl)) = cache.get(&q.message.questions[0].name) {
     // 	send_response_a(&q, &a, ttl);
     // }
