@@ -953,10 +953,9 @@ async fn upstream_query_a(socket: &mut tokio::net::UdpSocket, name: &str) -> Res
 async fn upstream_reply_a(socket: &mut tokio::net::UdpSocket) -> Result<FwdrAnswer, std::io::Error> {
     println!("Waiting upstream reply");
     let mut buf = [0; 512];
-    let amt = socket.recv(&mut buf).await?;
-    println!("Got reply from upstream");
-
-    let msg = Message::from(&mut buf[..amt])?;
+    let amt = socket.recv(&mut buf).await.expect("oops");
+    let msg = Message::from(&mut buf[..amt]).expect("oops");
+    println!("Upstream reply: {:?}", msg);
     if msg.rcode != 0 {
 	panic!("oops");
     }
@@ -1003,7 +1002,7 @@ async fn udp_server(questions: tokio::sync::mpsc::Sender<(Vec<u8>, std::net::Soc
 		questions.send((buf[0..amt].to_vec(), source)).await;
 	    },
 	    Some((data, source)) = answers.recv() => {
-		server.send_to(&data.to_vec(), source).await;
+		server.send_to(&data.to_vec(), source).await.expect("oops");
 	    },
 	    else => {
 		panic!("oops");
@@ -1019,8 +1018,8 @@ async fn handle_question(src: std::net::SocketAddr, message: Message,
     if message.questions.len() != 1 {
 	panic!("Only 1 query supported!");
     }
-    if message.questions[0].typ != 1 {
-	panic!("Only type A questions supported!");
+    if message.questions[0].typ != 1 && message.questions[0].typ != 28 {
+	panic!("Only type A and AAAA questions supported!");
     }
     println!("{:?}", message);
     let name = &message.questions[0].name;
