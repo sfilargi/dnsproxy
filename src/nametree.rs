@@ -1,10 +1,7 @@
 use byteorder::*;
-use log::{info, warn, error};
-use std::io::{Error, ErrorKind};
 use std::io::Cursor;
 use std::io::Write;
 use std::io::Read;
-use std::io::BufRead;
 
 struct PartNode {
     part: String,
@@ -70,10 +67,6 @@ impl NameTree {
         Self::insert_recursive(c, &parts[..parts.len() - 1]);
     }
 
-    pub fn insert(&mut self, parts: &[PartPos]) {
-        Self::insert_recursive(&mut self.root, &parts);
-    }
-
     fn find_recursive_<'a>(parent: &'a mut PartNode, location: &[&str]) -> &'a mut PartNode {
         if location.len() == 0 {
             return parent;
@@ -99,7 +92,7 @@ impl NameTree {
         None
     }
 
-    fn search_recursive<'a>(node: &PartNode, parts: &'a[&str], mut cur: usize) -> Option<(&'a [&'a str], &'a [&'a str], usize)> {
+    fn search_recursive<'a>(node: &PartNode, parts: &'a[&str], cur: usize) -> Option<(&'a [&'a str], &'a [&'a str], usize)> {
         match Self::find_child(node, parts[cur]) {
             Some(node) =>
                 if cur > 0 {
@@ -133,9 +126,9 @@ impl NameWriter {
     }
 
     fn search<'a>(&self, parts: &'a[&'a str]) -> (&'a [&'a str], &'a [&'a str], Option<usize>) {
-        let mut leftover: &[&str];
-        let mut found: &[&str];
-        let mut pointer: Option<usize>;
+        let leftover: &[&str];
+        let found: &[&str];
+        let pointer: Option<usize>;
         if let Some((l, f, i)) = self.tree.search(&parts) {
             leftover = l;
             found = f;
@@ -164,9 +157,9 @@ impl NameWriter {
             additions.push(PartPos::new(l, pos));
         }
         if let Some(i) = pointer {
-            c.write_u16::<BigEndian>(i as u16 | 0xc000 as u16);
+            c.write_u16::<BigEndian>(i as u16 | 0xc000 as u16).expect("oops");
         } else {
-            c.write_u8(0 as u8);
+            c.write_u8(0 as u8).expect("oops");
         }
         if additions.len() > 0 {
             self.tree.insert_at(&additions, found);
@@ -289,73 +282,5 @@ impl NameReader {
         } else {
             return Ok(".".to_owned());
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_reader() {
-        let mut rt = ReadTree{
-            parts: Vec::new(),
-        };
-        rt.parts.push(Some(ReadNode{part: "test".to_owned(), next: None}));
-        let x = 10;
-        if x >= rt.parts.len() {
-            rt.parts.resize(x + 1, None);
-        }
-        rt.parts[10] = None;
-    }
-
-    #[test]
-    fn test_reader2() {
-        let mut rt = ReadTree::new();
-        rt.insert(&[PartPos::new("a", 0), PartPos::new("b", 2)], None);
-    }
-
-    #[test]
-    fn test_writer3() {
-        let mut buf = vec![
-            0x6, 's' as u8, 'i' as u8, 'm' as u8, 'p' as u8, 'l' as u8, 'e' as u8, 
-            0x4, 't' as u8, 'e' as u8, 's' as u8, 't' as u8,
-            0x3, 'c' as u8, 'o' as u8, 'm' as u8, 0x0, 
-            0x7, 'e' as u8, 'x' as u8, 'a' as u8, 'm' as u8, 'p' as u8, 'l' as u8, 'e' as u8, 0xc0, 0xc, 
-            0x5, 'e' as u8, 'x' as u8, 't' as u8, 'r' as u8, 'a' as u8, 0xc0, 0x7];
-        let mut c = Cursor::new(&mut buf);
-        let mut nr = NameReader::new();
-        assert!(matches!(nr.read(&mut c), Ok(x) if x == "simple.test.com."));
-        assert!(matches!(nr.read(&mut c), Ok(x) if x == "example.com."));
-        assert!(matches!(nr.read(&mut c), Ok(x) if x == "extra.test.com."));
-    }
-
-    #[test]
-    fn test_tree() {
-        let mut nt = NameTree::new();
-        nt.insert(&vec![PartPos::new("test", 9), PartPos::new("net", 14)]);
-        nt.insert(&vec![PartPos::new("test", 10), PartPos::new("com", 15)]);
-        nt.insert(&vec![PartPos::new("example", 1), PartPos::new("test", 9), 
-            PartPos::new("com", 11)]);
-        assert!(nt.search(&["ok", "test", "com"]) == Some((&["ok"], &["test", "com"], 10)));
-        assert!(nt.search(&["test", "com"]) == Some((&[], &["test", "com"], 10)));
-        assert!(nt.search(&["com"]) == Some((&[], &["com"], 15)));
-    }
-
-    #[test]
-    fn test_writer() {
-        let mut nw = NameWriter::new();
-        let mut buf = Vec::<u8>::new();
-        let mut c = Cursor::new(&mut buf);
-        nw.write(&mut c, "simple.test.com.");
-        nw.write(&mut c, "example.com.");
-        nw.write(&mut c, "extra.test.com.");
-        let expected = vec![
-            0x6, 's' as u8, 'i' as u8, 'm' as u8, 'p' as u8, 'l' as u8, 'e' as u8, 
-            0x4, 't' as u8, 'e' as u8, 's' as u8, 't' as u8,
-            0x3, 'c' as u8, 'o' as u8, 'm' as u8, 0x0, 
-            0x7, 'e' as u8, 'x' as u8, 'a' as u8, 'm' as u8, 'p' as u8, 'l' as u8, 'e' as u8, 0xc0, 0xc, 
-            0x5, 'e' as u8, 'x' as u8, 't' as u8, 'r' as u8, 'a' as u8, 0xc0, 0x7];
-        assert!(expected == buf);
     }
 }
