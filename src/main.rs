@@ -1,12 +1,12 @@
 use std::net::Ipv4Addr;
     
+mod dns;
 mod message;
 mod nametree;
 
 use message::Message;
-use message::Question;
-use message::ResourceData;
-use message::ResourceRecord;
+use dns::ResourceData;
+use dns::ResourceRecord;
 
 fn genid() -> u16 {
     let mut buf = [0u8; 16];
@@ -52,7 +52,7 @@ fn create_response(q: &Message, a: &Ipv4Addr, ttl: u64) -> Message {
 	r.questions.push(qs.clone());
 	r.answers.push(ResourceRecord{
 	    name: qs.name.clone(),
-	    typ: qs.typ,
+	    rtype: qs.qtype,
 	    ttl: ttl as u32,
 	    class: qs.class,
 	    data: ResourceData::IPv4(a.clone()),
@@ -68,8 +68,9 @@ struct FwdrAnswer {
 }
 
 #[derive(Debug)]
-struct FwdrQuestion {
+struct Question {
     name: String,
+    rtype: dns::RecordType,
     rsp_to: tokio::sync::mpsc::Sender<FwdrAnswer>,
 }
 
@@ -79,10 +80,10 @@ async fn upstream_query_a(socket: &mut tokio::net::UdpSocket, name: &str) -> Res
     msg.qr = 0; // query
     msg.opcode = 0; // standard query
     msg.rd = 1; // recursive query
-    msg.questions.push(Question{
+    msg.questions.push(message::Question{
         name: name.to_owned(),
-        typ: 1, // A
-        class: 1, // IN
+        qtype: dns::RecordType::A, // A
+        class: dns::RecordClass::IN, // IN
     });
     let data = msg.into_bytes().expect("oops");
     println!("send to upstream");
@@ -91,7 +92,6 @@ async fn upstream_query_a(socket: &mut tokio::net::UdpSocket, name: &str) -> Res
 }
 
 async fn upstream_reply_a(socket: &mut tokio::net::UdpSocket) -> Result<FwdrAnswer, std::io::Error> {
-    println!("Waiting upstream reply");
     let mut buf = [0; 512];
     let amt = socket.recv(&mut buf).await.expect("oops");
     let msg = Message::from(&mut buf[..amt]).expect("oops");
@@ -108,7 +108,7 @@ async fn upstream_reply_a(socket: &mut tokio::net::UdpSocket) -> Result<FwdrAnsw
     panic!("oops");
 }
 
-async fn handle_fwd(q: FwdrQuestion) -> Result<(), std::io::Error> {
+async fn handle_fwd(q: Question) -> Result<(), std::io::Error> {
     let mut socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await.expect("oops");
     socket.connect("9.9.9.9:53").await.expect("oops");
     println!("Resolver got question");
@@ -119,7 +119,7 @@ async fn handle_fwd(q: FwdrQuestion) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-async fn forwarder(mut qs: tokio::sync::mpsc::Receiver<FwdrQuestion>) -> Result<(), std::io::Error> {
+async fn forwarder(mut qs: tokio::sync::mpsc::Receiver<Question>) -> Result<(), std::io::Error> {
     loop {
 	tokio::select! {
 	    Some(q) = qs.recv() => {
@@ -150,19 +150,17 @@ async fn udp_server(questions: tokio::sync::mpsc::Sender<(Vec<u8>, std::net::Soc
 }
 
 async fn handle_question(src: std::net::SocketAddr, message: Message,
-			 fwder: tokio::sync::mpsc::Sender<FwdrQuestion>,
+			 fwder: tokio::sync::mpsc::Sender<Question>,
 			 rsp_to: tokio::sync::mpsc::Sender<(Vec<u8>, std::net::SocketAddr)>) {
     if message.questions.len() != 1 {
 	panic!("Only 1 query supported!");
     }
-    if message.questions[0].typ != 1 && message.questions[0].typ != 28 {
-	panic!("Only type A and AAAA questions supported!");
-    }
     println!("{:?}", message);
     let name = &message.questions[0].name;
     let (f_tx, mut f_rx) = tokio::sync::mpsc::channel::<FwdrAnswer>(1);
-    let fq = FwdrQuestion{
+    let fq = Question{
 	name: name.to_owned(),
+	rtype: dns::RecordType::A,
 	rsp_to: f_tx,
     };
     fwder.send(fq).await.expect("oops");
@@ -182,7 +180,7 @@ async fn main() -> Result<(), std::io::Error> {
     let (udp_r_tx, udp_r_rx) = tokio::sync::mpsc::channel::<(Vec<u8>, std::net::SocketAddr)>(128);
     tokio::spawn(udp_server(udp_q_tx, udp_r_rx));
 
-    let (fwd_q_tx, fwd_q_rx) = tokio::sync::mpsc::channel::<FwdrQuestion>(128);
+    let (fwd_q_tx, fwd_q_rx) = tokio::sync::mpsc::channel::<Question>(128);
     tokio::spawn(forwarder(fwd_q_rx));
 
     loop {
