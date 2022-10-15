@@ -35,7 +35,7 @@ fn encode_reply(q: &Message, r: &Message) -> Result<Vec<u8>, std::io::Error> {
     return Ok(reply.into_bytes().expect("oops"));
 }
 
-fn create_response(q: &Message, a: &Ipv4Addr, ttl: u64) -> Message {
+fn create_response(q: &Message, ans: &Vec<ResourceRecord>) -> Message {
     let mut r = Message::new();
     r.id = q.id;
     r.qr = 1;
@@ -48,23 +48,16 @@ fn create_response(q: &Message, a: &Ipv4Addr, ttl: u64) -> Message {
     r.cd = 0;
     r.rcode = 0;
     assert!(q.questions.len() == 1);
-    for qs in &q.questions {
-	r.questions.push(qs.clone());
-	r.answers.push(ResourceRecord{
-	    name: qs.name.clone(),
-	    rtype: qs.qtype,
-	    ttl: ttl as u32,
-	    class: qs.class,
-	    data: ResourceData::IPv4(a.clone()),
-	});
+    r.questions.push(q.questions[0].clone());
+    for a in ans {
+	r.answers.push(a.clone());
     }
     r
 }
 
 #[derive(Debug)]
 struct FwdrAnswer {
-    a: Ipv4Addr,
-    ttl: u64,
+    answers: Vec<ResourceRecord>,
 }
 
 #[derive(Debug)]
@@ -74,7 +67,7 @@ struct Question {
     rsp_to: tokio::sync::mpsc::Sender<FwdrAnswer>,
 }
 
-async fn upstream_query_a(socket: &mut tokio::net::UdpSocket, name: &str) -> Result<(), std::io::Error> {
+async fn upstream_query_a(socket: &mut tokio::net::UdpSocket, name: &str, qtype: dns::RecordType) -> Result<(), std::io::Error> {
     let mut msg = Message::new();
     msg.id = genid() as u32;
     msg.qr = 0; // query
@@ -82,7 +75,7 @@ async fn upstream_query_a(socket: &mut tokio::net::UdpSocket, name: &str) -> Res
     msg.rd = 1; // recursive query
     msg.questions.push(message::Question{
         name: name.to_owned(),
-        qtype: dns::RecordType::A, // A
+        qtype: qtype,
         class: dns::RecordClass::IN, // IN
     });
     let data = msg.into_bytes().expect("oops");
@@ -99,20 +92,14 @@ async fn upstream_reply_a(socket: &mut tokio::net::UdpSocket) -> Result<FwdrAnsw
     if msg.rcode != 0 {
 	panic!("oops");
     }
-    if let ResourceData::IPv4(a) = msg.answers[0].data {
-	return Ok(FwdrAnswer{
-	    a: a,
-	    ttl: msg.answers[0].ttl as u64,
-	});
-    }
-    panic!("oops");
+    return Ok(FwdrAnswer{answers: msg.answers})
 }
 
 async fn handle_fwd(q: Question) -> Result<(), std::io::Error> {
     let mut socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await.expect("oops");
     socket.connect("9.9.9.9:53").await.expect("oops");
     println!("Resolver got question");
-    upstream_query_a(&mut socket, &q.name).await.expect("oops");
+    upstream_query_a(&mut socket, &q.name, q.rtype).await.expect("oops");
     println!("Resolver forwarded question");
     let answer = upstream_reply_a(&mut socket).await.expect("oops");
     q.rsp_to.send(answer).await.expect("oops");
@@ -160,13 +147,13 @@ async fn handle_question(src: std::net::SocketAddr, message: Message,
     let (f_tx, mut f_rx) = tokio::sync::mpsc::channel::<FwdrAnswer>(1);
     let fq = Question{
 	name: name.to_owned(),
-	rtype: dns::RecordType::A,
+	rtype: message.questions[0].qtype,
 	rsp_to: f_tx,
     };
     fwder.send(fq).await.expect("oops");
     if let Some(fa) = f_rx.recv().await {
 	println!("Got response from forwader!");
-	let answer = create_response(&message, &fa.a, fa.ttl);
+	let answer = create_response(&message, &fa.answers);
 	let data = encode_reply(&message, &answer).expect("oops");
 	rsp_to.send((data, src)).await.expect("oops");
     }
