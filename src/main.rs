@@ -1,11 +1,9 @@
-use std::net::Ipv4Addr;
-    
+   
 mod dns;
 mod message;
 mod nametree;
 
 use message::Message;
-use dns::ResourceData;
 use dns::ResourceRecord;
 
 fn genid() -> u16 {
