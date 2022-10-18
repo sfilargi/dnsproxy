@@ -150,7 +150,6 @@ async fn handle_question(src: std::net::SocketAddr, message: Message,
     };
     fwder.send(fq).await.expect("oops");
     if let Some(fa) = f_rx.recv().await {
-	println!("Got response from forwader!");
 	let answer = create_response(&message, &fa.answers);
 	let data = encode_reply(&message, &answer).expect("oops");
 	rsp_to.send((data, src)).await.expect("oops");

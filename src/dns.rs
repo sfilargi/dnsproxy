@@ -86,8 +86,8 @@ pub struct ResourceRecord {
 pub enum ResourceData {
     IPv4(Ipv4Addr),
     IPv6(Ipv6Addr),
-    CName(String),
     Ns(String),
+    CName(String),
     Soa(Soa),
     Ptr(String),
     Mx(Mx),

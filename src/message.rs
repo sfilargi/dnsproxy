@@ -266,6 +266,77 @@ impl<'a> MessageWriter<'_> {
             nw: nametree::NameWriter::new(),
         }
     }
+
+    pub fn write_a(&mut self, addr: &Ipv4Addr) -> Result<(), std::io::Error> {
+	self.c.write_u16::<BigEndian>(4 as u16).expect("oops");
+        self.c.write_all(&addr.octets()).expect("oops");
+	Ok(())
+    }
+
+    pub fn write_ns(&mut self, name: &String) -> Result<(), std::io::Error> {
+	let size = self.nw.size_of(&name);
+	self.c.write_u16::<BigEndian>(size.try_into().unwrap())?;
+	self.nw.write(&mut self.c, name)?;
+	Ok(())
+    }
+
+    pub fn write_cname(&mut self, name: &String) -> Result<(), std::io::Error> {
+	let size = self.nw.size_of(&name);
+	self.c.write_u16::<BigEndian>(size.try_into().unwrap())?;
+	self.nw.write(&mut self.c, name)?;
+	Ok(())
+    } 
+
+    pub fn write_soa(&mut self, soa: &dns::Soa) -> Result<(), std::io::Error> {
+	let len_pos = self.c.position();
+	self.c.write_u16::<BigEndian>(0)?;
+	let mut size = self.nw.size_of(&soa.mname);
+	self.nw.write(&mut self.c, &soa.mname)?;
+	size += self.nw.size_of(&soa.rname);
+	self.nw.write(&mut self.c, &soa.rname)?;
+	size += 20; // 20 bytes for 5 32 bits below
+	self.c.write_u32::<BigEndian>(soa.serial)?;
+	self.c.write_u32::<BigEndian>(soa.refresh)?;	
+	self.c.write_u32::<BigEndian>(soa.retry)?;
+	self.c.write_u32::<BigEndian>(soa.expire)?;
+	self.c.write_u32::<BigEndian>(soa.minimum)?;
+	// back write the size
+	let end_pos = self.c.position();
+	self.c.set_position(len_pos);
+	self.c.write_u16::<BigEndian>(size.try_into().unwrap())?;
+	self.c.set_position(end_pos);
+	Ok(())
+    }
+
+    pub fn write_ptr(&mut self, name: &String) -> Result<(), std::io::Error> {
+	let size = self.nw.size_of(name);
+	self.c.write_u16::<BigEndian>(size.try_into().unwrap())?;
+	self.nw.write(&mut self.c, name)?;
+	Ok(())
+    }
+
+    pub fn write_mx(&mut self, mx: &dns::Mx) -> Result<(), std::io::Error> {
+	let size = self.nw.size_of(&mx.exchange) + 2;
+	self.c.write_u16::<BigEndian>(size.try_into().unwrap())?;
+	self.c.write_u16::<BigEndian>(mx.preference)?;
+	self.nw.write(&mut self.c, &mx.exchange)?;
+	Ok(())
+    }
+
+    pub fn write_txt(&mut self, txt: &String) -> Result<(), std::io::Error> {
+	let size = txt.len() + 1;
+	self.c.write_u16::<BigEndian>(size.try_into().unwrap())?;
+	self.c.write_u8(txt.len().try_into().unwrap())?;
+	self.c.write_all(&txt.as_bytes())?;
+	Ok(())
+    }
+    
+    pub fn write_aaaa(&mut self, addr: &Ipv6Addr) -> Result<(), std::io::Error> {
+	self.c.write_u16::<BigEndian>(16 as u16).expect("oops");
+	self.c.write_all(&addr.octets()).expect("oops");
+	Ok(())
+    }
+    
     pub fn into_bytes(&mut self) -> Result<(), std::io::Error> {
         self.c.write_u16::<BigEndian>(self.m.id as u16).expect("oops");
         let mut flags = [0u8; 2];
@@ -297,15 +368,17 @@ impl<'a> MessageWriter<'_> {
             self.c.write_u16::<BigEndian>(u16::from(a.rtype)).expect("oops");
             self.c.write_u16::<BigEndian>(u16::from(a.class)).expect("oops");
             self.c.write_u32::<BigEndian>(a.ttl).expect("oops");
-            if let dns::ResourceData::IPv4(addr) = a.data {
-                self.c.write_u16::<BigEndian>(4 as u16).expect("oops");
-                self.c.write_all(&addr.octets()).expect("oops");
-	    } else if let dns::ResourceData::IPv6(addr) = a.data {
-		self.c.write_u16::<BigEndian>(16 as u16).expect("oops");
-		self.c.write_all(&addr.octets()).expect("oops");
-            } else {
-                panic!("oops");
-            }
+	    match &a.data {
+		dns::ResourceData::IPv4(addr) => self.write_a(&addr)?,
+		dns::ResourceData::Ns(name) => self.write_ns(&name)?,
+		dns::ResourceData::CName(name) => self.write_cname(&name)?,
+		dns::ResourceData::Soa(soa) => self.write_soa(&soa)?,
+		dns::ResourceData::Ptr(name) => self.write_ptr(&name)?,
+		dns::ResourceData::Mx(mx) => self.write_mx(&mx)?,
+		dns::ResourceData::Txt(txt) => self.write_txt(&txt)?,
+		dns::ResourceData::IPv6(addr) => self.write_aaaa(&addr)?,
+		_ => panic!("oops"),
+	    }
         }
         Ok(())
     }

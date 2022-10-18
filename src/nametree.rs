@@ -141,6 +141,25 @@ impl NameWriter {
         (leftover, found, pointer)
     }
 
+    pub fn size_of(&mut self, name: &str) -> usize {
+	// split the name into vector or labels
+        let labels: &[&str] = &name.split(".").filter(|p| *p != "").collect::<Vec<&str>>();
+        // search for the labels
+        let (leftover, _, pointer) = self.search(labels);
+
+	// The total size is 2 bytes for pointer, if there is one,
+	// plus 1 byte + str len for each leftoever
+	let mut size = 0;
+	if let Some(_) = pointer {
+	    size += 2;
+	}
+	for l in leftover {
+	    size += 1;
+	    size += l.len();
+	}
+	size
+    }
+
     pub fn write<T>(&mut self, c: &mut Cursor<T>, name: &str) -> Result<(), std::io::Error> 
     where std::io::Cursor<T>: std::io::Write {
         // split the name into vector or labels
