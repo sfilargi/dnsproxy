@@ -1,4 +1,9 @@
-   
+use hyper::server::conn::AddrStream;
+use hyper::service::{make_service_fn, service_fn};
+use hyper::{Body, Request, Response, Server};
+use std::{convert::Infallible, net::SocketAddr};
+use std::collections::HashMap;
+
 mod dns;
 mod message;
 mod nametree;
@@ -157,6 +162,40 @@ async fn handle_question(src: std::net::SocketAddr, message: Message,
     
 }
 
+
+async fn handle_doh_question(req: Request<Body>, _fwder: tokio::sync::mpsc::Sender<Question>) -> Result<Response<Body>, Infallible> {
+
+    let params: HashMap<String, String> = req.uri().query().map(|v| {
+	url::form_urlencoded::parse(v.as_bytes()).into_owned().collect()
+    }).expect("oops");
+    let mut payload = base64::decode(params["dns"].to_owned()).expect("oops");
+    let msg = Message::from(&mut payload);
+    println!("{:?}", msg);
+    Ok(Response::new("Hello, World!".into()))
+}
+
+fn run_doh(fwder: tokio::sync::mpsc::Sender<Question>) {
+    let addr = SocketAddr::from(([127, 0, 0, 1], 4443));
+    
+    let make_svc = make_service_fn(move |_conn: &AddrStream| {
+	let fwder = fwder.clone();
+        let service = service_fn(move |req| {
+	    handle_doh_question(req, fwder.clone())
+	});
+	async move {Ok::<_, Infallible>(service)}
+    });
+    
+    let server = Server::bind(&addr).serve(make_svc);
+    
+    tokio::spawn(async move {
+	if let Err(e) = server.await {
+            eprintln!("server error: {}", e);
+	}
+    });
+
+
+}
+
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
     //let mut cache = Cache::new();
@@ -166,6 +205,8 @@ async fn main() -> Result<(), std::io::Error> {
 
     let (fwd_q_tx, fwd_q_rx) = tokio::sync::mpsc::channel::<Question>(128);
     tokio::spawn(forwarder(fwd_q_rx));
+
+    run_doh(fwd_q_tx.clone());
 
     loop {
 	tokio::select!{
