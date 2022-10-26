@@ -49,6 +49,7 @@ impl NameTree {
 
     fn insert_recursive(parent: &mut LabelNode, labels: &[LabelPos]) {
         if labels.len() == 0 {
+	    // we don't add the root in the nametree
             return;
         }
         let ppos = &labels.last().expect("not possible");
@@ -106,7 +107,9 @@ impl NameTree {
 
     // Returns (leftover labels, found labels, index)
     pub fn search<'a>(&self, labels: &'a [&'a str]) -> Option<(&'a [&'a str], &'a [&'a str], usize)> {
-        assert!(labels.len() != 0);
+        if labels.len() == 0 {
+	    return None;
+	}
         if let None = Self::find_child(&self.root, labels[labels.len() -1]) {
             return None;
         }
@@ -152,6 +155,8 @@ impl NameWriter {
 	let mut size = 0;
 	if let Some(_) = pointer {
 	    size += 2;
+	} else {
+	    size += 1; // For the terminating NULL
 	}
 	for l in leftover {
 	    size += 1;

@@ -12,6 +12,8 @@ pub enum RecordType {
     TXT,
     AAAA,
     OPT,
+    HTTPS,
+    UNKNOWN(u16),
 }
 
 impl TryFrom<u16> for RecordType {
@@ -28,7 +30,8 @@ impl TryFrom<u16> for RecordType {
 	    16 => Ok(RecordType::TXT),
 	    28 => Ok(RecordType::AAAA),
 	    41 => Ok(RecordType::OPT),
-	    _  => Err(std::io::Error::new(std::io::ErrorKind::Other, "Unsupported RecordType")),
+	    65 => Ok(RecordType::HTTPS),
+	    rt => Ok(RecordType::UNKNOWN(rt)),
 	}
     }
 }
@@ -45,6 +48,8 @@ impl From<RecordType> for u16 {
 	    RecordType::TXT => 16,
 	    RecordType::AAAA => 28,
 	    RecordType::OPT => 41,
+	    RecordType::HTTPS => 65,
+	    RecordType::UNKNOWN(rt) => rt,
 	}
     }
 }
@@ -92,6 +97,7 @@ pub enum ResourceData {
     Ptr(String),
     Mx(Mx),
     Txt(String),
+    Https(Svcb),
     Unimplemented(u32),
 }
 
@@ -111,3 +117,70 @@ pub struct Mx {
     pub preference: u16,
     pub exchange: String,
 }
+
+#[derive(Debug, Clone, Copy)]
+pub enum SvcbParamKey {
+    ALPN,
+    NODEFAULTALPN,
+    PORT,
+    IPV4HINT,
+    ECHCONFIG,
+    IPV6HINT,
+    KEY(u16),
+}
+
+impl TryFrom<u16> for SvcbParamKey {
+    type Error = std::io::Error;
+
+    fn try_from(value: u16) -> Result<SvcbParamKey, Self::Error> {
+	match value {
+	    0 => panic!("oops"),
+	    1 => Ok(SvcbParamKey::ALPN),
+	    2 => Ok(SvcbParamKey::NODEFAULTALPN),
+	    3 => Ok(SvcbParamKey::PORT),
+	    4 => Ok(SvcbParamKey::IPV4HINT),
+	    5 => Ok(SvcbParamKey::ECHCONFIG),
+	    6 => Ok(SvcbParamKey::IPV6HINT),
+	    n => Ok(SvcbParamKey::KEY(n)),
+	}
+    }
+}
+
+impl From<SvcbParamKey> for u16 {
+    fn from(param: SvcbParamKey) -> u16 {
+	match param {
+	    SvcbParamKey::ALPN => 1,
+	    SvcbParamKey::NODEFAULTALPN => 2,
+	    SvcbParamKey::PORT => 3,
+	    SvcbParamKey::IPV4HINT => 4,
+	    SvcbParamKey::ECHCONFIG => 5,
+	    SvcbParamKey::IPV6HINT => 6,
+	    SvcbParamKey::KEY(n) => n,
+	}
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Svcb {
+    pub domain_name: String,
+    pub form: SvcbForm,
+}
+
+#[derive(Debug, Clone)]
+pub enum SvcbForm {
+    ALIASFORM,
+    SERVICEFORM(SvcbServiceForm),
+}
+
+#[derive(Debug, Clone)]
+pub struct SvcbServiceForm {
+    pub field_priority: u16,
+    pub params: Vec<SvcbParam>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SvcbParam {
+    pub key: SvcbParamKey,
+    pub value: Vec<u8>,
+}
+

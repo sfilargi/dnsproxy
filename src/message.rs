@@ -89,7 +89,6 @@ impl MessageParser<'_> {
         let name = self.nr.read(&mut self.c)?;
         let qtype = dns::RecordType::try_from(self.c.read_u16::<BigEndian>()?)?;
         let class = dns::RecordClass::try_from(self.c.read_u16::<BigEndian>()?)?;	
-	println!("Name: {:?}, Type: {:?}, Class: {:?}", name, qtype, class);
         return Ok(Question{
             name,
             qtype,
@@ -97,7 +96,6 @@ impl MessageParser<'_> {
         });
     }
     fn parse_questions(&mut self, count: u32) -> Result<Vec<Question>, std::io::Error> {
-	println!("Parsing {:?} questions", count);
         let mut qs = Vec::<Question>::new();
         for _ in 0..count {
             qs.push(self.parse_question()?);
@@ -163,10 +161,51 @@ impl MessageParser<'_> {
         self.c.read_exact(&mut data)?;
         Ok(Ipv6Addr::from(data))
     }
+
+    fn parse_https(&mut self, len: u64) -> Result<dns::Svcb, std::io::Error> {
+	println!("Total len: {:?}", len);
+	let start = self.c.position();
+	let field_priority = self.c.read_u16::<BigEndian>()?;
+	let domain_name = self.nr.read(&mut self.c)?;
+	if field_priority == 0 { // AliasForm
+	    return Ok(dns::Svcb{
+		domain_name,
+		form: dns::SvcbForm::ALIASFORM,
+	    });
+	}
+	let data_len = len - (self.c.position() - start);
+	let mut data = Vec::<u8>::new();
+	std::io::Read::by_ref(&mut self.c).take(data_len as u64).read_to_end(&mut data)?;
+	let params = Self::parse_svcb_params(&mut data)?;
+	Ok(dns::Svcb{
+	    domain_name,
+	    form: dns::SvcbForm::SERVICEFORM(dns::SvcbServiceForm{
+		field_priority,
+		params,
+	    }),
+	})
+    }
+
+    fn parse_svcb_params(data: &mut Vec<u8>) -> Result<Vec<dns::SvcbParam>, std::io::Error> {
+	let end = data.len() - 1;
+	let mut c = Cursor::new(data);
+	let mut values = Vec::<dns::SvcbParam>::new();
+	loop {
+	    if c.position() as usize > end {
+		break;
+	    }
+	    let key = c.read_u16::<BigEndian>()?;
+	    let value_len = c.read_u16::<BigEndian>()?;
+	    let mut value = Vec::<u8>::new();
+	    std::io::Read::by_ref(&mut c).take(value_len as u64).read_to_end(&mut value)?;
+	    values.push(dns::SvcbParam{key: dns::SvcbParamKey::try_from(key)?, value});
+	}
+	Ok(values)
+    }
     
     fn parse_unknown(&mut self, rtype: u16, len: u64) -> Result<u32, std::io::Error> {
-        let mut data = Vec::<u8>::new();
-        self.c.get_ref().take(len).read_to_end(&mut data)?;
+        let mut data = Vec::<u8>::new();	
+	std::io::Read::by_ref(&mut self.c).take(len as u64).read_to_end(&mut data)?;
         Ok(rtype.into())
     }
     
@@ -180,6 +219,7 @@ impl MessageParser<'_> {
 	    dns::RecordType::MX => Ok(dns::ResourceData::Mx(self.parse_mx()?)),
 	    dns::RecordType::TXT => Ok(dns::ResourceData::Txt(self.parse_txt()?)),
             dns::RecordType::AAAA => Ok(dns::ResourceData::IPv6(self.parse_ipv6()?)),
+	    dns::RecordType::HTTPS => Ok(dns::ResourceData::Https(self.parse_https(len)?)),
             _ => Ok(dns::ResourceData::Unimplemented(self.parse_unknown(u16::from(rtype), len)?)),
         };
     }
@@ -187,13 +227,10 @@ impl MessageParser<'_> {
     fn parse_resource(&mut self) -> Result<dns::ResourceRecord, std::io::Error> {
         let name = self.nr.read(&mut self.c)?;
         let rtype = dns::RecordType::try_from(self.c.read_u16::<BigEndian>()?)?;
-	println!("Resource: Name: {:?}, Type: {:?}", name, rtype);
 	let _ = self.c.read_u16::<BigEndian>()?; // OPT overloads this, and pisses me off.
         let class = dns::RecordClass::IN;
         let ttl = self.c.read_u32::<BigEndian>()? as u32;
         let rdlen = self.c.read_u16::<BigEndian>()? as u64;
-	println!("Resource: Name: {:?}, Type: {:?}, Class: {:?}, TTL: {:?}, RDLEN: {:?}",
-		 name, rtype, class, ttl, rdlen);
         return Ok(dns::ResourceRecord{
             name: name,
             rtype: rtype,
@@ -336,6 +373,34 @@ impl<'a> MessageWriter<'_> {
 	self.c.write_all(&addr.octets()).expect("oops");
 	Ok(())
     }
+
+    pub fn write_https(&mut self, https: &dns::Svcb) -> Result<(), std::io::Error> {
+	let len_pos = self.c.position();
+	self.c.write_u16::<BigEndian>(0)?;
+	match &https.form {
+	    dns::SvcbForm::ALIASFORM => {
+		self.c.write_u16::<BigEndian>(0)?; // priority = 0 for alias
+		self.nw.write(&mut self.c, &https.domain_name)?;
+	    },
+	    dns::SvcbForm::SERVICEFORM(form) => {
+		self.c.write_u16::<BigEndian>(form.field_priority)?;
+		self.nw.write(&mut self.c, &https.domain_name)?;
+		for p in &form.params {
+		    self.c.write_u16::<BigEndian>(p.key.into())?;
+		    self.c.write_u16::<BigEndian>(p.value.len().try_into().expect("oops"))?;
+		    self.c.write_all(&p.value)?;
+		}
+	    },
+	}
+	// back write the size
+	let end_pos = self.c.position();
+	let size = end_pos - len_pos - 2; // -2 is for the len
+	self.c.set_position(len_pos);
+	self.c.write_u16::<BigEndian>(size.try_into().unwrap())?;
+	self.c.set_position(end_pos);
+	println!("Size: {:?}", size); 
+	Ok(())
+    }
     
     pub fn into_bytes(&mut self) -> Result<(), std::io::Error> {
         self.c.write_u16::<BigEndian>(self.m.id as u16).expect("oops");
@@ -355,8 +420,8 @@ impl<'a> MessageWriter<'_> {
         self.c.write_all(&flags).expect("oops");
         self.c.write_u16::<BigEndian>(self.m.questions.len() as u16).expect("oops");
         self.c.write_u16::<BigEndian>(self.m.answers.len() as u16).expect("oops"); // an
-        self.c.write_u16::<BigEndian>(0u16).expect("oops"); // ns
-        self.c.write_u16::<BigEndian>(0u16).expect("oops"); // ad
+        self.c.write_u16::<BigEndian>(self.m.nameservers.len() as u16).expect("oops"); // ns
+        self.c.write_u16::<BigEndian>(self.m.additional.len() as u16).expect("oops"); // ad
         //Self::write_query(&mut c, &self.questions);
         for q in &self.m.questions {
             self.nw.write(&mut self.c, &q.name)?;
@@ -377,7 +442,26 @@ impl<'a> MessageWriter<'_> {
 		dns::ResourceData::Mx(mx) => self.write_mx(&mx)?,
 		dns::ResourceData::Txt(txt) => self.write_txt(&txt)?,
 		dns::ResourceData::IPv6(addr) => self.write_aaaa(&addr)?,
-		_ => panic!("oops"),
+		dns::ResourceData::Https(https) => self.write_https(&https)?,
+		_ => {println!("IGNORING ANSWER!"); ()},
+	    }
+        }
+	for a in &self.m.nameservers {
+            self.nw.write(&mut self.c, &a.name)?;
+            self.c.write_u16::<BigEndian>(u16::from(a.rtype)).expect("oops");
+            self.c.write_u16::<BigEndian>(u16::from(a.class)).expect("oops");
+            self.c.write_u32::<BigEndian>(a.ttl).expect("oops");
+	    match &a.data {
+		dns::ResourceData::IPv4(addr) => self.write_a(&addr)?,
+		dns::ResourceData::Ns(name) => self.write_ns(&name)?,
+		dns::ResourceData::CName(name) => self.write_cname(&name)?,
+		dns::ResourceData::Soa(soa) => self.write_soa(&soa)?,
+		dns::ResourceData::Ptr(name) => self.write_ptr(&name)?,
+		dns::ResourceData::Mx(mx) => self.write_mx(&mx)?,
+		dns::ResourceData::Txt(txt) => self.write_txt(&txt)?,
+		dns::ResourceData::IPv6(addr) => self.write_aaaa(&addr)?,
+		dns::ResourceData::Https(https) => self.write_https(&https)?,
+		_ => {println!("IGNORING NAMESERVER!"); ()},
 	    }
         }
         Ok(())
