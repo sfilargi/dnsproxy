@@ -187,11 +187,11 @@ impl MessageParser<'_> {
     }
 
     fn parse_svcb_params(data: &mut Vec<u8>) -> Result<Vec<dns::SvcbParam>, std::io::Error> {
-	let end = data.len() - 1;
+	let end = data.len();
 	let mut c = Cursor::new(data);
 	let mut values = Vec::<dns::SvcbParam>::new();
 	loop {
-	    if c.position() as usize > end {
+	    if c.position() as usize >= end {
 		break;
 	    }
 	    let key = c.read_u16::<BigEndian>()?;
