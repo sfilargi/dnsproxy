@@ -1,8 +1,11 @@
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
-use std::{convert::Infallible, net::SocketAddr};
 use std::collections::HashMap;
+use std::io::{Error, ErrorKind};
+use std::{convert::Infallible, net::SocketAddr};
+use tokio::time::Duration;
+use tokio::time::timeout;
 
 mod dns;
 mod message;
@@ -17,7 +20,8 @@ fn genid() -> u16 {
     return ((buf[0] as u16) << 8) | (buf[1] as u16);
 }
 
-fn create_response(q: &Message, rcode: u32, ans: &Vec<ResourceRecord>, ns: &Vec<ResourceRecord>) -> Message {
+fn create_response(q: &Message, rcode: u32, ans: &Vec<ResourceRecord>,
+		   ns: &Vec<ResourceRecord>, ads: &Vec<ResourceRecord>) -> Message {
     let mut r = Message::new();
     r.id = q.id;
     r.qr = 1;
@@ -32,10 +36,22 @@ fn create_response(q: &Message, rcode: u32, ans: &Vec<ResourceRecord>, ns: &Vec<
     assert!(q.questions.len() == 1);
     r.questions.push(q.questions[0].clone());
     for a in ans {
-	r.answers.push(a.clone());
+	match a.rtype {
+	    dns::RecordType::UNKNOWN(_) => (),
+	    _ =>  r.answers.push(a.clone()),
+	}
     }
     for n in ns {
-	r.nameservers.push(n.clone());
+	match n.rtype {
+	    dns::RecordType::UNKNOWN(_) => (),
+	    _ =>  r.nameservers.push(n.clone()),
+	}
+    }
+    for a in ads {
+	match a.rtype {
+	    dns::RecordType::UNKNOWN(_) => (),
+	    _ =>  r.additional.push(a.clone()),
+	}
     }
     r
 }
@@ -44,7 +60,8 @@ fn create_response(q: &Message, rcode: u32, ans: &Vec<ResourceRecord>, ns: &Vec<
 struct FwdrAnswer {
     rcode: u32,
     answers: Vec<ResourceRecord>,
-    nameservers: Vec<ResourceRecord>
+    nameservers: Vec<ResourceRecord>,
+    additional: Vec<ResourceRecord>,
 }
 
 #[derive(Debug)]
@@ -72,17 +89,38 @@ async fn upstream_query_a(socket: &mut tokio::net::UdpSocket, name: &str, qtype:
 
 async fn upstream_reply_a(socket: &mut tokio::net::UdpSocket) -> Result<FwdrAnswer, std::io::Error> {
     let mut buf = [0; 512];
-    let amt = socket.recv(&mut buf).await.expect("oops");
+    let amt = match timeout(Duration::from_secs(2), socket.recv(&mut buf)).await {
+	Err(_) => {
+	    eprintln!("Upstream timeout");
+	    return Err(Error::new(ErrorKind::Other, "BitCursor overflow"));
+	},
+	Ok(amt) => amt?,
+    };
     let msg = Message::from(&mut buf[..amt]).expect("oops");
-    println!("Upstream reply: {:?}", msg);
-    return Ok(FwdrAnswer{rcode: msg.rcode, answers: msg.answers, nameservers: msg.nameservers})
+    println!("Upstream answer: {:?}", msg);
+    Ok(FwdrAnswer{rcode: msg.rcode, answers: msg.answers,
+		  nameservers: msg.nameservers, additional: msg.additional})
 }
 
 async fn handle_fwd(q: Question) -> Result<(), std::io::Error> {
     let mut socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await.expect("oops");
-    socket.connect("9.9.9.9:53").await.expect("oops");
+    socket.connect("8.8.8.8:53").await.expect("oops");
+    println!("Upstream query: {:?}, {:?}", q.name, q.rtype);
     upstream_query_a(&mut socket, &q.name, q.rtype).await.expect("oops");
-    let answer = upstream_reply_a(&mut socket).await.expect("oops");
+    let answer = match upstream_reply_a(&mut socket).await {
+	Err(_) => {
+	    if let Err(_) = q.rsp_to.send(FwdrAnswer{
+		rcode: 5,
+		answers: Vec::new(),
+		nameservers: Vec::new(),
+		additional: Vec::new(),
+	    }).await {
+		eprintln!("handle_fwd: Failed to send answer");
+	    }
+	    return Ok(());
+	},
+	Ok(a) => a,
+    };
     if let Err(err) = q.rsp_to.send(answer).await {
 	eprintln!("handle_fwd: Failed to send answer: {:?}", err);
     }
@@ -93,8 +131,10 @@ async fn forwarder(mut qs: tokio::sync::mpsc::Receiver<Question>) -> Result<(), 
     loop {
 	tokio::select! {
 	    Some(q) = qs.recv() => {
-		handle_fwd(q).await.expect("oops");
-	    },
+		tokio::spawn(async move {
+		    handle_fwd(q).await.expect("oops");
+		});
+	    }
 	}
     }
 }
@@ -135,7 +175,8 @@ async fn handle_question(src: std::net::SocketAddr, message: Message,
     };
     fwder.send(fq).await.expect("oops");
     if let Some(fa) = f_rx.recv().await {
-	let mut answer = create_response(&message, fa.rcode, &fa.answers, &fa.nameservers);
+	let mut answer = create_response(&message, fa.rcode, &fa.answers,
+					 &fa.nameservers, &fa.additional);
 	println!("UDP Answer: {:?}", answer);
 	let data = answer.into_bytes().expect("oops");
 	rsp_to.send((data, src)).await.expect("oops");
@@ -154,7 +195,8 @@ async fn handle_doh_question(req: Request<Body>, fwder: tokio::sync::mpsc::Sende
     let message = Message::from(&mut payload).expect("oops");
     println!("DoH Question: {:?}", message);
     if let dns::RecordType::UNKNOWN(_) = message.questions[0].qtype {
-	let mut answer = create_response(&message, 4, &Vec::new(), &Vec::new());
+	let mut answer = create_response(&message, 4, &Vec::new(), &Vec::new(),
+					 &Vec::new());
 	println!("Not supported - DoH Answer: {:?}", answer);
 	let data = answer.into_bytes().expect("oops");
 	return Ok(Response::new(Body::from(data)));
@@ -169,7 +211,8 @@ async fn handle_doh_question(req: Request<Body>, fwder: tokio::sync::mpsc::Sende
     };
     fwder.send(fq).await.expect("oops");
     if let Some(fa) = f_rx.recv().await {
-	let mut answer = create_response(&message, fa.rcode, &fa.answers, &fa.nameservers);
+	let mut answer = create_response(&message, fa.rcode, &fa.answers,
+					 &fa.nameservers, &fa.additional);
 	println!("DoH Answer: {:?}", answer);
 	let data = answer.into_bytes().expect("oops");
 	return Ok(Response::new(Body::from(data)));

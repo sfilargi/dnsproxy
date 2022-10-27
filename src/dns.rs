@@ -11,7 +11,6 @@ pub enum RecordType {
     MX,
     TXT,
     AAAA,
-    OPT,
     HTTPS,
     UNKNOWN(u16),
 }
@@ -29,7 +28,6 @@ impl TryFrom<u16> for RecordType {
 	    15 => Ok(RecordType::MX),
 	    16 => Ok(RecordType::TXT),
 	    28 => Ok(RecordType::AAAA),
-	    41 => Ok(RecordType::OPT),
 	    65 => Ok(RecordType::HTTPS),
 	    rt => Ok(RecordType::UNKNOWN(rt)),
 	}
@@ -47,7 +45,6 @@ impl From<RecordType> for u16 {
 	    RecordType::MX => 15,
 	    RecordType::TXT => 16,
 	    RecordType::AAAA => 28,
-	    RecordType::OPT => 41,
 	    RecordType::HTTPS => 65,
 	    RecordType::UNKNOWN(rt) => rt,
 	}
