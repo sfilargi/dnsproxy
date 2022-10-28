@@ -15,4 +15,5 @@ socketpair = "*"
 tokio = { version = "1", features = ["full"] }
 hyper = { version = "0.14", features = ["full"] }
 url = "*"
-base64 = "*"
+base64-url = "*"
+

@@ -1,8 +1,8 @@
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Request, Response, Server};
+use hyper::{Body, Request, Response, Server, Method};
 use std::collections::HashMap;
-use std::io::{Error, ErrorKind};
+use std::io::{Error, ErrorKind, BufRead};
 use std::{convert::Infallible, net::SocketAddr};
 use tokio::time::Duration;
 use tokio::time::timeout;
@@ -104,7 +104,7 @@ async fn upstream_reply_a(socket: &mut tokio::net::UdpSocket) -> Result<FwdrAnsw
 
 async fn handle_fwd(q: Question) -> Result<(), std::io::Error> {
     let mut socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await.expect("oops");
-    socket.connect("8.8.8.8:53").await.expect("oops");
+    socket.connect("9.9.9.9:53").await.expect("oops");
     println!("Upstream query: {:?}, {:?}", q.name, q.rtype);
     upstream_query_a(&mut socket, &q.name, q.rtype).await.expect("oops");
     let answer = match upstream_reply_a(&mut socket).await {
@@ -188,9 +188,15 @@ async fn handle_doh_question(req: Request<Body>, fwder: tokio::sync::mpsc::Sende
     let params: HashMap<String, String> = req.uri().query().map(|v| {
 	url::form_urlencoded::parse(v.as_bytes()).into_owned().collect()
     }).expect("oops");
-    let mut payload = match base64::decode(params["dns"].to_owned()) {
+    if matches!(req.method(), &Method::POST) {
+	panic!("oops");
+    }
+    let mut payload = match base64_url::decode(&params["dns"].to_owned()) {
 	Ok(payload) => payload,
-	_ => return Ok(Response::builder().status(500).body(Body::from("oops")).expect("oops")),
+	_ => {
+	    eprintln!("oops");
+	    return Ok(Response::builder().status(500).body(Body::from("oops")).expect("oops"));
+	},
     };
     let message = Message::from(&mut payload).expect("oops");
     println!("DoH Question: {:?}", message);
@@ -243,8 +249,39 @@ fn run_doh(fwder: tokio::sync::mpsc::Sender<Question>) {
 
 }
 
+fn read_line(l: &str) {
+    // Remove comments
+    let parts: Vec<&str> = l.split("#").collect();
+    if parts[0].len() == 0 {
+	return;
+    }
+    // Split Addr/Name
+    let parts: Vec<&str> = parts[0].split(" ").collect();
+    let parts: Vec<&str> = parts.into_iter().filter(|w| w.len() != 0).collect();
+    if parts.len() < 2 {
+	return;
+    }
+    match parts[0].parse::<std::net::IpAddr>() {
+	Ok(addr) => println!("{:?}, {:?}", addr, parts[1]),
+	Err(e) => println!("{:?}, {:?}", parts[0], e),
+    }
+}
+
+fn read_hosts() {
+    let file = std::fs::File::open("hosts").expect("oops");
+    let lines = std::io::BufReader::new(file).lines();
+
+    for l in lines {
+	if let Ok(txt) = l {
+	    read_line(&txt);
+	}
+    }
+}
+    
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
+    read_hosts();
+    
     //let mut cache = Cache::new();
     let (udp_q_tx, mut udp_q_rx) = tokio::sync::mpsc::channel::<(Vec<u8>, std::net::SocketAddr)>(128);
     let (udp_r_tx, udp_r_rx) = tokio::sync::mpsc::channel::<(Vec<u8>, std::net::SocketAddr)>(128);
